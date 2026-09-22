@@ -170,6 +170,15 @@ une pile morte, une portée perdue ou une passerelle arrêtée. Au-delà du seui
 réglé dans la configuration du plugin, deux heures par défaut, la page Santé la
 signale et la commande *Vu il y a* donne le chiffre.
 
+Et il ne se contente pas d'attendre qu'on ouvre la page Santé : une fois par
+heure, une balise devenue muette — et une personne dont le départ
+n'aboutit pas — écrit un message dans le **centre de messages** de Jeedom, celui
+dont la cloche s'allume en haut de l'écran. Le message se retire tout seul dès
+que la balise reparle. Il nomme le seuil et non la durée écoulée, parce que le
+cœur ne réécrit pas le texte d'un message déjà posé : le chiffre exact se lit
+sur la commande *Vu il y a* et sur la page Santé, qui se recalculent, eux, à
+chaque lecture.
+
 Le plugin ne bascule **jamais** la présence de lui-même sur ce motif. Déclarer
 absent quelqu'un dont on n'a plus de nouvelles reviendrait à armer l'alarme sur
 une personne assise dans son salon — exactement ce que toute la conception
@@ -512,10 +521,11 @@ Lire ce journal de temps en temps est le seul entretien que le plugin demande.
 
 La page **Santé** de Jeedom répond d'un coup d'œil à « est-ce que tout va
 bien ? ». Le plugin n'y compte que des choses qui ne se voient pas autrement —
-treize lignes, dont aucune n'est décorative :
+quatorze lignes, dont aucune n'est décorative :
 
 | Contrôle | Ce qu'il rattrape |
 |---|---|
+| Dernière évaluation | le cron du cœur ne passe plus. C'est la panne qui arrête tout : les délais de départ n'expirent plus, les attentes des règles ne se terminent plus, et les commandes gardent leur dernière valeur — qui a l'air juste. Tant que cette ligne est rouge, les treize autres ne veulent rien dire |
 | Personnes suivies, Foyers | le décompte, pour repérer un équipement oublié |
 | Personnes sans source | une personne créée puis jamais terminée. Elle a l'air normale et reste absente à vie |
 | Sources disparues | la commande a été supprimée depuis |

@@ -60,6 +60,9 @@ class presencium extends eqLogic {
     const CACHE_TEMPOREL = 'presencium::temporel::';
     const CACHE_JOURNAL_ECHEC = 'presencium::journalEchec::';
     const CACHE_PREMIERE_VUE = 'presencium::premiereVue::';
+    /* Sans identifiant d'équipement : c'est le battement du plugin entier, la
+     * preuve que le cron du coeur passe encore. */
+    const CACHE_CRON = 'presencium::cron';
     /* Au-delà, une balise qui se dit présente est tenue pour suspecte. Les
      * Tile de cette installation battent toutes les cinq minutes tant
      * qu'elles sont vues : deux heures de silence ne sont pas un hasard. */
@@ -142,6 +145,20 @@ class presencium extends eqLogic {
                 log::add(__CLASS__, 'error', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
             }
         }
+
+        /*
+         * La marque d'un passage COMPLET, posée en dernier.
+         *
+         * C'est la seule chose que le plugin sache de lui-même : si le cron du
+         * coeur s'arrête — désactivé, saturé, bloqué par un autre plugin qui ne
+         * rend pas la main — plus aucune décision ne se prend. Les délais de
+         * départ n'expirent plus, les attentes ne se terminent plus, les
+         * déclencheurs de durée ne tombent plus. Et rien ne change à l'écran :
+         * les commandes gardent leur dernière valeur, qui a l'air juste. La
+         * page Santé lit cet horodatage, et c'est le seul endroit d'où cette
+         * panne-là puisse se voir.
+         */
+        cache::set(self::CACHE_CRON, $maintenant, self::CACHE_DUREE);
     }
 
     /*
@@ -196,6 +213,36 @@ class presencium extends eqLogic {
             $id = (int) $morceaux[1];
             if ($id > 0 && !isset($vivants[$id])) {
                 @unlink($chemin);
+            }
+        }
+    }
+
+    /*
+     * Chaque heure : les deux pannes qui ne disent pas leur nom.
+     *
+     * La page Santé les relève déjà, mais elle ne se lit que le jour où l'on
+     * soupçonne quelque chose — et ces deux-là ne donnent envie de soupçonner
+     * personne : tout continue de fonctionner, les états sont publiés, les
+     * règles tournent. Une balise dont la pile est morte laisse simplement la
+     * maison « occupée » pour toujours, et l'alarme ne s'arme plus, sans un
+     * mot. On les écrit donc là où elles seront lues sans être cherchées.
+     *
+     * À l'heure et non à la minute : le seuil de silence se compte en heures
+     * (deux par défaut), et un message réécrit soixante fois par heure serait
+     * soixante écritures en base pour la même phrase.
+     *
+     * Les équipements désactivés passent ici aussi, exprès : c'est ce qui
+     * retire le message de quelqu'un qu'on vient justement de désactiver.
+     */
+    public static function cronHourly() {
+        foreach (self::byType(__CLASS__) as $eqLogic) {
+            if ($eqLogic->type() !== self::TYPE_PERSONNE) {
+                continue;
+            }
+            try {
+                $eqLogic->signalerSilences();
+            } catch (Throwable $e) {
+                log::add(__CLASS__, 'debug', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
             }
         }
     }
@@ -500,6 +547,17 @@ class presencium extends eqLogic {
             log::add(__CLASS__, 'debug', __('Retrait de l\'écouteur impossible :', __FILE__) . ' ' . $e->getMessage());
         }
         try {
+            /* Un message survit à l'équipement qui l'a fait naître : il resterait
+             * dans le centre de messages à réclamer la réparation d'une balise
+             * qui n'est plus suivie par personne, sans qu'aucun écran ne permette
+             * d'en retrouver l'origine. */
+            foreach ($this->clesMessage() as $cle) {
+                message::removeAll(__CLASS__, $cle);
+            }
+        } catch (Throwable $e) {
+            log::add(__CLASS__, 'debug', __('Messages non retirés :', __FILE__) . ' ' . $e->getMessage());
+        }
+        try {
             $this->purgerCache();
             $this->journalVider();
             /* Les verrous sont supprimés ici et nulle part ailleurs : effacer
@@ -532,6 +590,123 @@ class presencium extends eqLogic {
             cache::delete(self::CACHE_REPOS . $id . '::' . $regle['id']);
             cache::delete(self::CACHE_TEMPOREL . $id . '::' . $regle['id']);
         }
+    }
+
+    /*
+     * Les deux pannes muettes d'une personne, en un seul endroit.
+     *
+     * La page Santé et le centre de messages posent la même question : elle
+     * n'a donc qu'une réponse, calculée ici. Écrite deux fois, elle finirait
+     * par diverger, et le jour où la page Santé et le centre de messages ne
+     * diront pas la même chose, c'est le plugin entier qu'on cessera de croire.
+     *
+     * Rend array('muette'  => minutes de silence ou 0,
+     *            'bloquee' => secondes d'attente ou 0,
+     *            'seuil_silence' => minutes, 'delai_depart' => minutes) —
+     * les deux seuils partent avec le verdict parce que c'est eux, et non la
+     * durée écoulée, que le centre de messages peut nommer sans mentir avec le
+     * temps (voir signalerSilences()).
+     *
+     * Un équipement désactivé ne diagnostique rien : il n'est plus suivi, et le
+     * signaler reviendrait à réclamer une réparation pour quelque chose qu'on
+     * vient d'éteindre volontairement.
+     */
+    public function diagnostic($_maintenant = null, $_verdict = null) {
+        $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
+        $silenceMax = (int) self::reglageGlobal('silence_max', self::SILENCE_MAX_DEFAUT);
+        $reglages = presenciumPersonne::normaliserReglages($this->getConfiguration());
+        $rendu = array('muette' => 0, 'bloquee' => 0,
+                       'seuil_silence' => $silenceMax,
+                       'delai_depart'  => (int) $reglages['delai_depart']);
+        if ($this->type() !== self::TYPE_PERSONNE || $this->getIsEnable() != 1) {
+            return $rendu;
+        }
+
+        $verdict = is_array($_verdict) ? $_verdict : $this->verdictPersonne($maintenant);
+
+        /*
+         * La balise muette : elle se dit présente et n'émet plus. La pile est
+         * morte pendant que la personne était chez elle, et le signal est resté
+         * figé sur « présent ». La présence ne bouge alors plus jamais, le foyer
+         * ne devient plus jamais vide, l'alarme ne peut plus s'armer — et rien
+         * n'échoue nulle part. Seule la date de COLLECTE, qui cesse d'avancer,
+         * le trahit.
+         */
+        $vu = isset($verdict['vu_depuis']) ? (int) $verdict['vu_depuis'] : 0;
+        if ($silenceMax > 0 && $vu > $silenceMax && !empty($verdict['brut'])) {
+            $rendu['muette'] = $vu;
+        }
+
+        /*
+         * Le départ qui n'aboutit pas : une confirmation qui dure plus
+         * longtemps que le délai qui la borne. C'est le symptôme d'une source
+         * sans date de changement exploitable — le décompte repart à chaque
+         * passage et n'expire jamais. Deux minutes de marge pour ne pas
+         * confondre avec une confirmation qui court normalement.
+         */
+        $signal = isset($verdict['signal_depuis']) ? (int) $verdict['signal_depuis'] : 0;
+        if (isset($verdict['raison']) && $verdict['raison'] === 'depart_en_cours' && $signal > 0
+            && ($maintenant - $signal) > ((int) $reglages['delai_depart'] * 60 + 120)) {
+            $rendu['bloquee'] = $maintenant - $signal;
+        }
+        return $rendu;
+    }
+
+    /* Les deux clés de message de cette personne. Regroupées ici parce qu'elles
+     * sont posées d'un côté et retirées de trois autres — cronHourly(),
+     * preRemove() et le retour à la normale : une clé écrite d'un côté et
+     * nettoyée de l'autre finit toujours par laisser un message immortel. */
+    public function clesMessage() {
+        return array('muette'  => 'presencium::muette::' . (int) $this->getId(),
+                     'bloquee' => 'presencium::bloquee::' . (int) $this->getId());
+    }
+
+    /*
+     * Porte le diagnostic au centre de messages, ou l'en retire.
+     *
+     * Le message est posé sous une clé propre à l'équipement ET au motif :
+     * message::add() remplace alors le précédent au lieu d'en empiler un par
+     * heure, et le retrait ne touche que celui qui vient de cesser d'être vrai.
+     *
+     * Retiré dès que la balise reparle : un avertissement qui survit à sa cause
+     * finit par être fermé à la main, et il disparaîtra alors aussi le jour où
+     * il redeviendra vrai.
+     *
+     * LE TEXTE NOMME LE SEUIL, JAMAIS LA DURÉE ÉCOULÉE. Vérifié dans le coeur
+     * (message::save, branche « logicalId » non vide) : quand la clé existe
+     * déjà, seules la date et le nombre d'occurrences sont mises à jour, et le
+     * TEXTE reste celui du premier passage. Un « depuis 2 h 05 » écrit cette
+     * nuit-là annoncerait donc encore deux heures trois jours plus tard, dans
+     * un message qui, lui, n'aurait pas cessé d'être vrai : le chiffre serait
+     * faux et la conclusion qu'on en tire — « c'est récent » — exactement
+     * l'inverse de la réalité. Le seuil, lui, ne bouge pas. Le chiffre exact
+     * vit sur la commande « Vu il y a » et sur la page Santé, qui se
+     * recalculent à chaque lecture.
+     */
+    public function signalerSilences($_maintenant = null) {
+        $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
+        $diagnostic = $this->diagnostic($maintenant);
+        $cles = $this->clesMessage();
+
+        if ($diagnostic['muette'] > 0) {
+            message::add(__CLASS__, sprintf(
+                __('%1$s : sa balise se dit présente mais n\'a plus rien émis depuis plus de %2$s. Tant que cela dure, la personne reste présente pour toujours, la maison ne devient jamais vide et l\'alarme ne peut plus s\'armer. Pile morte, balise hors de portée ou passerelle arrêtée — le plugin ne bascule jamais la présence de lui-même sur ce motif, à vous de trancher. La commande « Vu il y a » et la page Santé donnent le chiffre exact.', __FILE__),
+                $this->getHumanName(), self::duree((int) $diagnostic['seuil_silence'] * 60)),
+                '', $cles['muette']);
+        } else {
+            message::removeAll(__CLASS__, $cles['muette']);
+        }
+
+        if ($diagnostic['bloquee'] > 0) {
+            message::add(__CLASS__, sprintf(
+                __('%1$s attend sa confirmation de départ depuis plus longtemps que son délai (%2$s). Sa commande source ne porte sans doute pas de date de changement exploitable : le décompte repart à chaque passage du cron et n\'expire jamais. Tant que cela dure, la maison ne devient jamais vide et l\'alarme ne peut pas s\'armer. La page Santé donne la durée réelle.', __FILE__),
+                $this->getHumanName(), self::duree((int) $diagnostic['delai_depart'] * 60)),
+                '', $cles['bloquee']);
+        } else {
+            message::removeAll(__CLASS__, $cles['bloquee']);
+        }
+
+        return $diagnostic;
     }
 
     /* ============================================================== COMMANDES */
@@ -2685,53 +2860,29 @@ class presencium extends eqLogic {
             if ($eqLogic->type() === self::TYPE_PERSONNE) {
                 $personnes++;
 
-                /*
-                 * Une personne restée « départ en cours » au-delà de son délai.
-                 *
-                 * C'est le symptôme d'une panne déjà corrigée une fois : une
-                 * source sans date exploitable faisait repartir le décompte à
-                 * chaque passage du cron, le temps écoulé valait éternellement
-                 * zéro, et la personne ne devenait jamais absente. La maison ne
-                 * se vidait plus, l'alarme ne pouvait plus s'armer, et rien
-                 * n'en disait un mot. Le contrôle reste ici pour que ce
-                 * symptôme-là se voie, quel que soit le chemin par lequel il
-                 * reviendrait — et deux minutes de marge suffisent à ne pas
-                 * confondre avec une confirmation qui court normalement.
-                 */
                 try {
-                    $verdict = $eqLogic->verdictPersonne($maintenant);
-                    $reglages = presenciumPersonne::normaliserReglages($eqLogic->getConfiguration());
                     /*
-                     * Une balise muette. La pile d'une Tile meurt pendant que
-                     * la personne est chez elle : le signal reste figé sur
-                     * « présent », la présence ne bouge plus jamais, le foyer
-                     * ne devient plus jamais vide et l'alarme ne peut plus
-                     * s'armer. Rien n'échoue, rien n'est journalisé — seule la
-                     * date de collecte, qui cesse d'avancer, le trahit.
-                     *
-                     * On le signale sans jamais basculer la présence de force :
-                     * déclarer absent quelqu'un dont on n'a plus de nouvelles
-                     * reviendrait à armer l'alarme sur une personne assise dans
-                     * son salon, ce que tout le reste du plugin s'applique à
-                     * éviter. C'est à l'utilisateur de trancher, une fois
-                     * prévenu.
+                     * Les deux pannes muettes — la balise qui n'émet plus et le
+                     * départ qui n'aboutit pas — sont décidées par diagnostic()
+                     * et nulle part ailleurs. Le centre de messages pose la
+                     * même question toutes les heures : deux calculs pour une
+                     * seule question finiraient par répondre différemment, et
+                     * ce jour-là on ne saurait plus lequel croire.
                      */
-                    $silenceMax = (int) self::reglageGlobal('silence_max', self::SILENCE_MAX_DEFAUT);
-                    $vu = isset($verdict['vu_depuis']) ? (int) $verdict['vu_depuis'] : 0;
-                    if ($silenceMax > 0 && $vu > $silenceMax && !empty($verdict['brut'])) {
-                        $muettes[] = $eqLogic->getHumanName() . ' (' . $vu . ' ' . __('min', __FILE__) . ')';
+                    $verdict = $eqLogic->verdictPersonne($maintenant);
+                    $diagnostic = $eqLogic->diagnostic($maintenant, $verdict);
+
+                    if ($diagnostic['muette'] > 0) {
+                        $muettes[] = $eqLogic->getHumanName() . ' ('
+                                   . $diagnostic['muette'] . ' ' . __('min', __FILE__) . ')';
+                    }
+                    if ($diagnostic['bloquee'] > 0) {
+                        $bloquees[] = $eqLogic->getHumanName() . ' ('
+                                    . self::duree($diagnostic['bloquee']) . ')';
                     }
 
                     if (count(self::foyersDe((int) $eqLogic->getId())) === 0) {
                         $orphelines[] = $eqLogic->getHumanName();
-                    }
-
-                    $signal = isset($verdict['signal_depuis']) ? (int) $verdict['signal_depuis'] : 0;
-                    if (isset($verdict['raison']) && $verdict['raison'] === 'depart_en_cours'
-                        && $signal > 0
-                        && ($maintenant - $signal) > ((int) $reglages['delai_depart'] * 60 + 120)) {
-                        $bloquees[] = $eqLogic->getHumanName() . ' ('
-                                    . self::duree($maintenant - $signal) . ')';
                     }
                 } catch (Throwable $e) {
                     log::add(__CLASS__, 'debug', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
@@ -2793,6 +2944,32 @@ class presencium extends eqLogic {
             }
         }
 
+        /*
+         * Le cron du coeur passe-t-il encore ?
+         *
+         * En tête, parce que cette ligne-là conditionne toutes les autres :
+         * sans cron, les délais de départ n'expirent plus, les attentes des
+         * règles ne se terminent plus, les déclencheurs de durée ne tombent
+         * plus — et rien ne change à l'écran, les commandes gardant leur
+         * dernière valeur, qui a toujours l'air juste. Douze lignes de Santé
+         * au vert sous un cron arrêté ne veulent rien dire.
+         *
+         * Cinq minutes de tolérance : le cron du coeur passe chaque minute,
+         * mais il est partagé par tous les plugins et prend parfois du retard.
+         * En deçà, on signalerait une panne à chaque installation chargée.
+         */
+        $dernierCron = (int) cache::byKey(self::CACHE_CRON)->getValue(0);
+        $cronOk = ($dernierCron > 0 && ($maintenant - $dernierCron) < 300);
+        $sante[] = array(
+            'test'   => __('Dernière évaluation', __FILE__),
+            'result' => ($dernierCron > 0)
+                      ? sprintf(__('il y a %s', __FILE__), self::duree($maintenant - $dernierCron))
+                      : __('jamais', __FILE__),
+            'advice' => $cronOk ? '' : (($dernierCron > 0)
+                      ? __('Le cron du coeur ne passe plus : plus aucune décision n\'est prise. Les délais de départ n\'expirent plus, les attentes des règles ne se terminent plus, et les commandes gardent leur dernière valeur — qui a l\'air juste. Regardez Réglages → Système → Moteur de tâches.', __FILE__)
+                      : __('Le plugin n\'a encore jamais été évalué. Le cron du coeur passe chaque minute : attendez une minute après l\'installation, puis rechargez cette page. S\'il reste à « jamais », regardez Réglages → Système → Moteur de tâches.', __FILE__)),
+            'state'  => $cronOk,
+        );
         $sante[] = array(
             'test'   => __('Personnes suivies', __FILE__),
             'result' => $personnes,

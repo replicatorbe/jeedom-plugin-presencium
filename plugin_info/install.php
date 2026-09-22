@@ -93,6 +93,11 @@ function presencium_remove() {
             log::add('presencium', 'debug', __('Nettoyage impossible :', __FILE__) . ' ' . $e->getMessage());
         }
     }
+    /* Le battement du cron n'appartient à aucun équipement : personne ne le
+     * nettoierait. Laissé en place, il ferait dire à la page Santé d'une
+     * réinstallation que la dernière évaluation date d'avant la désinstallation. */
+    cache::delete(presencium::CACHE_CRON);
+
     foreach (listener::byClass('presencium') as $listener) {
         try {
             $listener->remove();

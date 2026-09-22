@@ -164,6 +164,14 @@ a long silence betrays a dead battery, a lost range or a stopped gateway. Beyond
 the threshold set in the plugin's configuration, two hours by default, the
 Health page reports it and the *Seen ago* command gives the figure.
 
+And it does not wait for you to open the Health page: once an hour, a
+tag gone silent — and a person whose departure never completes — writes a
+message into Jeedom's **message centre**, the one whose bell lights up at the
+top of the screen. The message removes itself as soon as the tag speaks again.
+It names the threshold rather than the elapsed time, because the core does not
+rewrite the text of a message already posted: the exact figure is on the *Seen
+ago* command and on the Health page, which do recompute on every read.
+
 The plugin **never** flips presence on its own for this reason. Declaring absent
 someone you have no news from would arm the alarm on a person sitting in their
 living room — exactly what the whole design works to avoid. It reports it, you
@@ -490,11 +498,12 @@ Reading that log now and then is the only maintenance the plugin asks for.
 ## The Health page
 
 Jeedom's **Health** page answers "is everything all right?" at a glance. The
-plugin counts only things there that do not show anywhere else — thirteen checks,
+plugin counts only things there that do not show anywhere else — fourteen checks,
 not one of them decorative:
 
 | Check | What it catches |
 |---|---|
+| Last evaluation | the core cron no longer runs. This is the failure that stops everything: departure delays never expire, rule waits never end, and the commands keep their last value — which looks right. While this line is red, the other thirteen mean nothing |
 | People tracked, Households | the head count, to spot a forgotten device |
 | People with no source | a person created and then never finished. It looks perfectly normal and stays absent for life |
 | Missing sources | the command has been deleted since |
