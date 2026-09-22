@@ -2739,16 +2739,37 @@ class presencium extends eqLogic {
             if (!isset($transitions[$i + 1])) {
                 continue;
             }
+            /*
+             * LA SECONDE FAIT FOI, LA MINUTE N'EST QUE POUR L'AFFICHAGE.
+             *
+             * L'épisode n'était gardé qu'en minutes arrondies, et comparé au
+             * délai par un « > » strict. Le moteur, lui, décide en secondes et
+             * avec un « >= » (presenciumPersonne::evaluer). Les deux ne
+             * disaient donc pas la même chose : un creux de 15 min 12 s
+             * devenait « 15 », 15 > 15 était faux, et le tableau annonçait
+             * « aucune fausse absence » pour un délai de 15 minutes que le
+             * plugin, lui, aurait bel et bien franchi à la 900e seconde.
+             *
+             * Le cas s'est produit ici : une balise s'est tue 15 min 12 s, le
+             * départ a été déclaré, la maison est devenue vide et la règle
+             * d'armement est partie — sur quelqu'un qui n'avait pas bougé.
+             * L'analyse aurait recommandé le délai qui laisse passer
+             * exactement ce creux-là. C'est le seul chiffre que cet écran sert
+             * à choisir : il doit être décidé par la règle du moteur, et par
+             * aucune autre.
+             */
+            $secondes = (int) ($transitions[$i + 1]['ts'] - $transitions[$i]['ts']);
             $episodes[] = array(
-                'debut'   => $transitions[$i]['ts'],
-                'minutes' => (int) round(($transitions[$i + 1]['ts'] - $transitions[$i]['ts']) / 60),
+                'debut'    => $transitions[$i]['ts'],
+                'secondes' => $secondes,
+                'minutes'  => (int) round($secondes / 60),
             );
         }
 
         $courtes = array();
         $longues = array();
         foreach ($episodes as $episode) {
-            if ($episode['minutes'] >= $seuilVrai) {
+            if ($episode['secondes'] >= $seuilVrai * 60) {
                 $longues[] = $episode;
             } else {
                 $courtes[] = $episode;
@@ -2762,13 +2783,13 @@ class presencium extends eqLogic {
             $longuesVues = 0;
             $tenuPresent = 0;
             foreach ($episodes as $episode) {
-                /* Un épisode devient un départ déclaré dès qu'il dure plus que
-                 * le délai ; le temps « tenu présent à tort » est ce que le
+                /* La comparaison du moteur, mot pour mot : « écoulé >= délai »,
+                 * en secondes. Le temps « tenu présent à tort » est ce que le
                  * délai a mangé, épisode par épisode. */
-                $tenuPresent += min($episode['minutes'], $delai);
-                if ($episode['minutes'] > $delai) {
+                $tenuPresent += min($episode['secondes'], $delai * 60);
+                if ($episode['secondes'] >= $delai * 60) {
                     $declares++;
-                    if ($episode['minutes'] >= $seuilVrai) {
+                    if ($episode['secondes'] >= $seuilVrai * 60) {
                         $longuesVues++;
                     } else {
                         $courtesPassees++;
@@ -2781,7 +2802,7 @@ class presencium extends eqLogic {
                 'faux'         => $courtesPassees,
                 'vrais'        => $longuesVues,
                 'vrais_total'  => count($longues),
-                'tenu_present' => $tenuPresent,
+                'tenu_present' => (int) round($tenuPresent / 60),
             );
         }
 
@@ -2810,8 +2831,13 @@ class presencium extends eqLogic {
             'episodes'    => count($episodes),
             'courtes'     => count($courtes),
             'longues'     => count($longues),
-            'plus_longue_courte' => (count($courtes) > 0) ? max(array_column($courtes, 'minutes')) : 0,
-            'plus_courte_longue' => (count($longues) > 0) ? min(array_column($longues, 'minutes')) : 0,
+            /* Arrondis dans le sens qui ne ment pas : le plus long creux vers le
+             * haut, la plus courte vraie absence vers le bas. Un creux de
+             * 15 min 12 s affiché « 15 min » à côté d'un délai recommandé de
+             * 20 min ferait passer la recommandation pour de la prudence
+             * gratuite, alors qu'elle est le premier délai qui le couvre. */
+            'plus_longue_courte' => (count($courtes) > 0) ? (int) ceil(max(array_column($courtes, 'secondes')) / 60) : 0,
+            'plus_courte_longue' => (count($longues) > 0) ? (int) floor(min(array_column($longues, 'secondes')) / 60) : 0,
             'lignes'      => $lignes,
             'recommande'  => $recommande,
         );
