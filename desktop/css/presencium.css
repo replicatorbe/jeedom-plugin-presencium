@@ -1,0 +1,230 @@
+/* Les vignettes du plugin Presencium.
+ *
+ * Le gabarit du coeur fixe la vignette à 130 px de large et 168 px de haut,
+ * avec overflow:hidden (desktop/css/desktop.main.css, vers 1598). Il est taillé
+ * pour une icône et un nom. Nos cartes en disent davantage — l'état, le délai
+ * de confirmation, et les avertissements qui signalent un équipement inachevé —
+ * et sans ces règles le texte du délai débordait en largeur jusque sur la carte
+ * voisine, tandis que les badges tombaient sous les 168 px et disparaissaient
+ * purement et simplement. Un avertissement invisible est pire que pas
+ * d'avertissement : il donne l'illusion que tout va bien.
+ *
+ * Les règles sont portées par une classe du plugin plutôt que par le sélecteur
+ * du coeur, pour ne toucher aucune autre page. La vue « tableau » du coeur est
+ * explicitement épargnée : elle a sa propre mise en page, et lui imposer une
+ * colonne flex la casserait.
+ */
+
+.presenciumCarte:not(.displayAsTable) {
+    width: 158px !important;
+    min-width: 158px !important;
+    max-width: 158px !important;
+    height: auto !important;
+    min-height: 186px !important;
+    padding: 12px 8px 10px 8px !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    row-gap: 3px;
+}
+
+/* L'icône du coeur est posée en 4em, ce qui ne laisse plus la place de rien
+   dire en dessous. Elle reste la première chose qu'on voit, en plus sobre. */
+.presenciumCarte:not(.displayAsTable) > .presenciumCarteIcone {
+    font-size: 2.8em !important;
+    line-height: 1.1;
+    margin: 0 0 2px 0;
+}
+
+/* Le nom est posé par le coeur en position relative avec un décalage vertical,
+   pensé pour une carte où il suit immédiatement l'icône. Dans une colonne, ce
+   décalage le faisait chevaucher la ligne suivante. */
+.presenciumCarte:not(.displayAsTable) > .name {
+    top: 0 !important;
+    margin: 0 !important;
+    max-width: 100%;
+    /* Hauteur réservée : un équipement rangé dans un objet porte une étiquette
+       de plus que les autres. Sans ce plancher, deux vignettes côte à côte
+       n'alignent ni leur nom ni leur état, et la rangée paraît bancale alors
+       que rien ne cloche. */
+    display: flex !important;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    row-gap: 1px;
+}
+
+/* La pièce, en filigrane au-dessus du nom. Toujours présente, vide au besoin :
+   c'est elle qui garantit que deux vignettes voisines s'alignent, que leurs
+   équipements soient rangés ou non. */
+.presenciumCarte:not(.displayAsTable) .presenciumCarteObjet {
+    display: block;
+    max-width: 142px;
+    font-size: 10px;
+    line-height: 13px;
+    opacity: 0.55;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.presenciumCarte:not(.displayAsTable) > .name strong {
+    top: 0 !important;
+    height: auto !important;
+    max-width: 142px !important;
+    padding: 0 !important;
+    line-height: 15px;
+    white-space: normal;
+    word-break: break-word;
+}
+
+/* L'état, en pastille : c'est l'information qu'on vient lire, elle doit se
+   distinguer du reste au premier regard et non se fondre en petit gris. */
+.presenciumCarte:not(.displayAsTable) .presenciumCarteEtat {
+    display: inline-block;
+    max-width: 142px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    line-height: 16px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.presenciumCarteEtat.presenciumPresent { background: rgba(92, 184, 92, 0.18); color: #3c763d; }
+.presenciumCarteEtat.presenciumAbsent  { background: rgba(128, 128, 128, 0.16); color: inherit; opacity: 0.75; }
+
+/* Le vert foncé est lisible sur fond clair et illisible sur fond sombre. Le
+   coeur marque le thème sur <body data-theme="...Dark">, c'est la seule
+   accroche disponible : sans cette règle, la pastille la plus utile du plugin
+   devient un rectangle presque noir chez qui travaille en thème sombre. */
+body[data-theme*="Dark"] .presenciumCarteEtat.presenciumPresent { color: #8fd18f; }
+
+/* La ligne de détail est celle qui débordait : elle est bornée à la largeur de
+   la carte et coupée proprement, le texte complet restant dans l'infobulle. */
+.presenciumCarte:not(.displayAsTable) .presenciumCarteDetail {
+    max-width: 142px;
+    font-size: 11px;
+    line-height: 14px;
+    opacity: 0.65;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Les étiquettes de Bootstrap sont en display:inline, et une largeur maximale
+   ne s'applique pas à un élément inline : sans display:inline-block, le badge
+   déborde de la carte au lieu d'être coupé proprement. */
+.presenciumCarte:not(.displayAsTable) .presenciumCarteBadge {
+    display: inline-block;
+    max-width: 142px;
+    margin-top: 2px;
+    /* Le coeur pose « .label { font-size: 12px !important; padding: 4px 12px } »
+       (desktop.main.css, vers 938). Un !important l'emporte sur une règle plus
+       spécifique qui n'en porte pas : sans ces !important-ci, le badge gardait
+       la taille et les marges d'une étiquette de formulaire et débordait de la
+       vignette. */
+    font-size: 10px !important;
+    line-height: 14px !important;
+    padding: 2px 7px !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Le coin haut-droit reste au coeur : c'est lui qui y pose l'oeil de
+   visibilité en vue tableau. */
+.presenciumCarte:not(.displayAsTable) > .displayTableRight {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+}
+
+/* ------------------------------------------------------------------ TABLEAU
+ *
+ * Le bouton de bascule du cœur pose « displayAsTable » sur les vignettes et les
+ * transforme en lignes : 100 % de large, 24 px de haut au maximum, alignées à
+ * gauche. La préférence est mémorisée, si bien qu'un clic un jour vaut pour
+ * toutes les visites suivantes.
+ *
+ * Nos vignettes disent plus de choses qu'une ligne de 24 px n'en contient. Sans
+ * ces règles, l'icône gardait ses 38 px imposés par le cœur et le nom, l'état
+ * et les avertissements se retrouvaient empilés les uns sur les autres dans la
+ * hauteur d'une seule ligne. Tout passe donc en ligne, et ce qui ne peut pas
+ * tenir — le délai, déjà lisible en fiche — s'efface plutôt que de déborder.
+ */
+
+.presenciumCarte.displayAsTable {
+    white-space: nowrap;
+    overflow: hidden !important;
+    line-height: 22px !important;
+}
+
+.presenciumCarte.displayAsTable > .presenciumCarteIcone {
+    font-size: 16px !important;
+    vertical-align: middle;
+    margin: 0 8px 0 15px;
+}
+
+/* .name est entièrement pris en main par le coeur en vue tableau : position
+   absolue, inline-flex, 24 px de haut. On ne le lui reprend pas — on se range
+   dedans, en alignant nos éléments sur sa ligne. */
+.presenciumCarte.displayAsTable > .name {
+    align-items: center;
+    column-gap: 10px;
+}
+
+.presenciumCarte.displayAsTable > .name > strong {
+    flex: 0 0 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* En ligne, les largeurs sont fixes : c'est ce qui fait qu'une vue tableau se
+   lit en balayant une colonne du regard plutôt qu'en cherchant chaque valeur.
+   L'emplacement de la pièce est réservé même vide, sinon les équipements
+   rangés décaleraient toute leur ligne. */
+.presenciumCarte.displayAsTable .presenciumCarteObjet {
+    flex: 0 0 110px;
+    font-size: 11px;
+    opacity: 0.55;
+    text-align: right;
+    padding-right: 10px;
+}
+
+.presenciumCarte.displayAsTable > .name strong {
+    display: inline !important;
+    height: auto !important;
+    line-height: 22px !important;
+}
+
+.presenciumCarte.displayAsTable .presenciumCarteEtat {
+    flex: 0 0 auto;
+    align-self: center;
+    margin: 0 !important;
+    min-width: 160px !important;
+    max-width: none;
+    text-align: center;
+}
+
+/* Le délai est le premier sacrifié : il tient en une ligne de la fiche, et une
+   vue tableau sert à balayer des états, pas des réglages. */
+.presenciumCarte.displayAsTable .presenciumCarteDetail {
+    display: none;
+}
+
+/* Le coeur impose « margin: 0 20px !important; min-width: 20% !important » à
+   toute étiquette posée dans .name en vue tableau (vers 2168). Sur une ligne
+   qui porte déjà un nom et un état, cela repoussait les avertissements hors de
+   la ligne visible. */
+.presenciumCarte.displayAsTable .presenciumCarteBadge {
+    flex: 0 0 auto;
+    align-self: center;
+    margin: 0 !important;
+    min-width: 0 !important;
+    max-width: none !important;
+}

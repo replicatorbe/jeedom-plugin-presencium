@@ -1,0 +1,26 @@
+{
+    "id": "presencium",
+    "name": "Presencium",
+    "pluginVersion": "1.0",
+    "description": {
+        "fr_FR": "Transforme des detecteurs de presence qui rebondissent en une presence sur laquelle on peut decider, et declenche des actions sur l'arrivee ou le depart des personnes, sous conditions, avec un mode simulation qui journalise sans rien executer.",
+        "en_US": "Turns flapping presence detectors into a presence you can act on, and triggers actions when people arrive or leave, under conditions, with a simulation mode that logs everything without executing anything."
+    },
+    "licence": "AGPL",
+    "author": "sMug (Jerome Fafchamps)",
+    "require": "4.4",
+    "requireOsVersion": "11",
+    "category": "security",
+    "index": "presencium",
+    "hasDependency": 0,
+    "hasOwnDeamon": 0,
+    "maxDependancyInstallTime": 5,
+    "eventjs": 0,
+    "issue": "https://github.com/replicatorbe/jeedom-plugin-presencium/issues",
+    "documentation": "https://github.com/replicatorbe/jeedom-plugin-presencium/blob/master/docs/#language#/index.md",
+    "documentation_beta": "https://github.com/replicatorbe/jeedom-plugin-presencium/blob/beta/docs/#language#/index.md",
+    "changelog": "https://github.com/replicatorbe/jeedom-plugin-presencium/blob/master/docs/#language#/changelog.md",
+    "changelog_beta": "https://github.com/replicatorbe/jeedom-plugin-presencium/blob/beta/docs/#language#/changelog.md",
+    "language": ["fr_FR", "en_US"],
+    "compatibility": ["smart", "rpi", "docker", "diy"]
+}
