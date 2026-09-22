@@ -2229,10 +2229,54 @@ class presencium extends eqLogic {
             $present = ($presents === null)
                      ? !empty($verdict['present'])
                      : isset($presents[(int) $personne->getId()]);
-            $depuis = isset($verdict['signal_depuis']) ? (int) $verdict['signal_depuis'] : 0;
-            $morceaux[] = $personne->getName() . ' '
-                . ($present ? __('présent(e)', __FILE__) : __('absent(e)', __FILE__))
-                . (($depuis > 0) ? ' ' . __('depuis', __FILE__) . ' ' . self::duree($maintenant - $depuis) : '');
+
+            /*
+             * DEUX DURÉES, ET ELLES NE DISENT PAS LA MÊME CHOSE.
+             *
+             * « depuis » se rapporte à l'état annoncé juste avant — présent ou
+             * absent —, donc à la présence STABILISÉE, exactement comme la
+             * commande « Depuis » : c'est l'instant du dernier changement
+             * confirmé, celui que rafraichirPersonne() a calculé à la fin du
+             * délai et non au passage du cron qui s'en aperçoit.
+             *
+             * L'âge du signal brut était affiché à sa place. Les deux coïncident
+             * à l'arrivée, le délai d'arrivée valant zéro, et divergent de tout
+             * le délai de départ aux départs : le journal annonçait « absent
+             * depuis 5 min » à la seconde même où le départ venait d'être
+             * confirmé, c'est-à-dire un état vieux de zéro seconde. Or c'est ce
+             * fichier-là qu'on relit pour régler le délai, et un chiffre qui
+             * vaut le délai lui-même est le pire endroit où se tromper.
+             *
+             * L'âge du signal reste affiché à côté quand il diffère, parce que
+             * c'est l'information qu'on vient chercher : elle dit depuis combien
+             * de temps la balise se tait, donc où en est la confirmation en
+             * cours. Deux nombres nommés valent mieux qu'un seul ambigu.
+             */
+            $memoire = cache::byKey(self::CACHE_PRESENCE . (int) $personne->getId())->getValue(null);
+            $stable = (is_array($memoire) && isset($memoire['depuis'])) ? (int) $memoire['depuis'] : 0;
+            $signal = isset($verdict['signal_depuis']) ? (int) $verdict['signal_depuis'] : 0;
+            /* Cache vide — installation neuve, cache purgé : on retombe sur la
+             * date du signal, qui est au moins vraie, plutôt que de n'afficher
+             * aucune durée. */
+            if ($stable <= 0 || $stable > $maintenant) {
+                $stable = $signal;
+            }
+
+            $texte = $personne->getName() . ' '
+                   . ($present ? __('présent(e)', __FILE__) : __('absent(e)', __FILE__))
+                   . (($stable > 0) ? ' ' . __('depuis', __FILE__) . ' ' . self::duree($maintenant - $stable) : '');
+
+            /* Une minute d'écart : en deçà, les deux durées racontent le même
+             * événement à la latence du cron près, et la précision ne ferait
+             * qu'allonger la ligne. */
+            if ($signal > 0 && abs($stable - $signal) >= 60) {
+                $texte .= ' (' . sprintf(
+                    empty($verdict['brut'])
+                        ? __('signal perdu il y a %s', __FILE__)
+                        : __('signal revenu il y a %s', __FILE__),
+                    self::duree($maintenant - $signal)) . ')';
+            }
+            $morceaux[] = $texte;
         }
         if (count($morceaux) === 0) {
             return __('aucune personne dans ce foyer', __FILE__);

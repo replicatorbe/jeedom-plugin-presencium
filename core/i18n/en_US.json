@@ -156,6 +156,8 @@
         "relecture impossible avant écriture,": "re-read before writing failed,",
         "réévaluation imbriquée ignorée (une action de règle rappelle le foyer).": "nested re-evaluation ignored (a rule action calls the household back).",
         "s": "s",
+        "signal perdu il y a %s": "signal lost %s ago",
+        "signal revenu il y a %s": "signal back %s ago",
         "simulée": "simulated",
         "tous": "all",
         "Écouteur :": "Listener:",
