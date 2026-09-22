@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.1
+
+This release fixes three silences — situations where the plugin did nothing and
+said nothing — and adds what it takes to set a delay from measurements rather
+than by guesswork.
+
+- **A new household gathers the people already declared.** It used to start
+  empty: you wrote its rules, saved, and nothing ever fired, with no error and
+  no message, because a household with no resident is empty at all times.
+  Unticking someone takes one click; working out why nothing fires takes an
+  evening.
+- **Every person keeps their own log.** Presence moves were only written into
+  the households containing them: a person belonging to no household — the case
+  of every installation that starts up — saw their absorbed bounces vanish
+  without a trace, which is exactly what simulation mode is meant to show. The
+  Log tab now belongs to both device types.
+- **Silent tags are reported.** When a tag's battery dies while the person is
+  home, the signal freezes on “present”: presence never moves again, the house
+  never becomes empty and the alarm can no longer arm. A new command says how
+  long ago the tag was seen, and the Health page picks it up. The plugin never
+  flips presence on its own for this reason — declaring absent someone you have
+  no news from would arm on a person sitting in their living room. It reports
+  it, you decide.
+- **Analyze the tag.** A button reads back the followed command's history and
+  replays the decision for eight departure delays, with the very function the
+  cron uses. The table says, on your data and for that tag, how many false
+  absences each delay removes, how many real ones it lets through, and what it
+  costs in presence held wrongly. The chosen delay drops into the form with one
+  click. Two tags in the same house have no reason to ask for the same setting,
+  and that is now measurable.
+- **Force presence from the panel.** Both commands existed but stayed hidden:
+  to test a rule you had to leave the house.
+- **Export the log to CSV.** A week of campaign reads better in a spreadsheet,
+  where you sort by verdict and count.
+- **People outside any household** are reported on the Health page.
+- New **Occupied for** command on the household, symmetrical to *Empty for*:
+  the counter already existed, it was simply never published.
+
 ## 1.0
 
 First release.

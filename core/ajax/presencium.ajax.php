@@ -89,7 +89,19 @@ try {
             $eqLogic->setConfiguration('valeur_presente', '1');
             $eqLogic->setConfiguration('source', 0);
         } else {
-            $eqLogic->setConfiguration('personnes', array());
+            /* Un foyer neuf rassemble les personnes déjà déclarées. Le partir
+             * vide paraît neutre et ne l'est pas : on écrit ses règles, on
+             * enregistre, et rien ne se déclenche jamais — sans erreur, sans
+             * message, parce qu'un foyer sans habitant est vide en permanence.
+             * Décocher quelqu'un prend un clic ; comprendre pourquoi rien ne
+             * part prend une soirée. */
+            $membres = array();
+            foreach (presencium::byType('presencium') as $candidat) {
+                if ($candidat->getConfiguration('type') == presencium::TYPE_PERSONNE) {
+                    $membres[] = (int) $candidat->getId();
+                }
+            }
+            $eqLogic->setConfiguration('personnes', $membres);
             $eqLogic->setConfiguration('regles', array());
             $eqLogic->setConfiguration('simulation', 0);
         }
@@ -132,6 +144,9 @@ try {
     /* Le journal d'un foyer, du plus récent au plus ancien, filtré par genre.
      * C'est l'outil de détection des faux positifs : il se lit après coup, et
      * le filtre est ce qui permet d'isoler les rebonds de présence du reste. */
+    /* Le journal n'est plus réservé au foyer : une personne tient le sien, et
+     * c'est le seul endroit où se lisent ses rebonds tant qu'elle n'appartient
+     * à aucun foyer. */
     if (init('action') == 'journal') {
         $eqLogic = $getEqLogic(init('id'), presencium::TYPE_FOYER);
         $limite = (int) init('limite', 200);
@@ -160,7 +175,7 @@ try {
 
     if (init('action') == 'viderJournal') {
         unautorizedInDemo();
-        $eqLogic = $getEqLogic(init('id'), presencium::TYPE_FOYER);
+        $eqLogic = $getEqLogic(init('id'));
         $eqLogic->journalVider();
         ajax::success(true);
     }
@@ -228,6 +243,67 @@ try {
             'presents'   => isset($instantane['presents']) ? $instantane['presents'] : array(),
             'total'      => isset($instantane['total']) ? (int) $instantane['total'] : 0,
             'simulation' => $eqLogic->enSimulation() ? 1 : 0,
+        ));
+    }
+
+    /* Forcer une présence depuis la fiche. Les commandes existent déjà, mais
+     * invisibles : pour éprouver une règle il fallait sortir de chez soi. */
+    if (init('action') == 'forcer') {
+        unautorizedInDemo();
+        $eqLogic = $getEqLogic(init('id'), presencium::TYPE_PERSONNE);
+        $mode = init('mode');
+        if (!in_array($mode, array('present', 'absent', 'auto'), true)) {
+            throw new Exception(__('Mode inconnu :', __FILE__) . ' ' . $mode);
+        }
+        ajax::success($eqLogic->forcerPersonne($mode));
+    }
+
+    /* Le journal en CSV. Une semaine de campagne se relit dans un tableur, pas
+     * dans une page web : c'est là qu'on trie par verdict et qu'on compte. */
+    if (init('action') == 'journalCsv') {
+        $eqLogic = $getEqLogic(init('id'));
+        $lignes = array(array('date', 'genre', 'verdict', 'simulation', 'regle', 'detail', 'actions'));
+        foreach ($eqLogic->journalLire(5000) as $entree) {
+            $actions = array();
+            if (isset($entree['actions']) && is_array($entree['actions'])) {
+                foreach ($entree['actions'] as $action) {
+                    $actions[] = (isset($action['cmd']) ? $action['cmd'] : '') . ' -> '
+                               . (isset($action['resultat']) ? $action['resultat'] : '');
+                }
+            }
+            $lignes[] = array(
+                isset($entree['date']) ? $entree['date'] : '',
+                isset($entree['genre']) ? $entree['genre'] : '',
+                isset($entree['verdict']) ? $entree['verdict'] : '',
+                empty($entree['simulation']) ? '0' : '1',
+                isset($entree['nom']) ? $entree['nom'] : '',
+                isset($entree['detail']) ? $entree['detail'] : '',
+                implode(' | ', $actions),
+            );
+        }
+        $csv = '';
+        foreach ($lignes as $ligne) {
+            $champs = array();
+            foreach ($ligne as $champ) {
+                $champs[] = '"' . str_replace('"', '""', (string) $champ) . '"';
+            }
+            $csv .= implode(';', $champs) . "\r\n";
+        }
+        ajax::success($csv);
+    }
+
+    /* Analyse l'historique de la balise d'une personne et propose un délai. */
+    if (init('action') == 'analyser') {
+        $eqLogic = $getEqLogic(init('id'), presencium::TYPE_PERSONNE);
+        $source = (int) $eqLogic->getConfiguration('source', 0);
+        if ($source <= 0) {
+            throw new Exception(__('Cette personne ne suit aucune commande : il n\'y a rien à analyser.', __FILE__));
+        }
+        ajax::success(presencium::analyserSource(
+            $source,
+            init('jours', 7),
+            $eqLogic->getConfiguration('valeur_presente', '1'),
+            init('seuil', 60)
         ));
     }
 

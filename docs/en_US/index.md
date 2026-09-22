@@ -116,6 +116,68 @@ whose profile is uncertain, spends a week in simulation mode before being
 trusted with an alarm.** That is precisely what the mode is for, and it is the
 only way to settle episodes that theory does not settle.
 
+#### Setting it on your measurements, not on mine
+
+The figures above are those of two Tile tags, in one house, over five days.
+Yours will say something else — and your two tags will already disagree with
+each other.
+
+The **Analyze** button on a person's panel therefore does the same work on your
+installation. It reads back the followed command's history, cuts the absences
+out of it, and replays the decision for eight possible delays — with the very
+function the cron uses, so the analysis cannot diverge from what the plugin will
+actually do. It returns a table of this shape:
+
+| Delay | Departures | False | Real | Presence held wrongly |
+|---|---|---|---|---|
+| 0 min | 10 | **6** | 4 / 4 | 0 min |
+| 10 min | 6 | **2** | 4 / 4 | 82 min |
+| **15 min** | **4** | **0** | **4 / 4** | 108 min |
+| 30 min | 4 | 0 | 4 / 4 | 168 min |
+
+The chosen delay is the smallest one that brings the *False* column to zero
+without eating into the *Real* column. One click drops it into the form — the
+device still has to be saved.
+
+Two settings drive the analysis. The **window**: a week is usually enough, but a
+tag that rarely drops out needs to be watched longer. And the duration beyond
+which **an absence counts as real**, sixty minutes by default: this is the only
+judgement the machine cannot make for you. If you go out shopping for twenty
+minutes, it must come down — otherwise those outings will be counted as dropouts
+and the proposed delay will be too long.
+
+Sometimes no delay fits. The plugin says so instead of picking one at random: it
+means this tag's dropouts last as long as real outings, and no setting repairs
+what the signal does not let you tell apart. That is the moment to look at the
+tag itself — its battery, its range, how many gateways hear it.
+
+#### When a tag goes silent
+
+There is one failure the departure delay cannot catch, because it does not look
+like a departure. If a tag's battery dies **while the person is home**, the
+signal freezes on “present”. Presence never moves again, the house never becomes
+empty, and the alarm can no longer arm. Nothing fails, nothing is logged.
+
+So the plugin watches the date the tag was last *heard* — which is not the date
+it last changed its mind. A Bluetooth tag beats regularly as long as it is seen;
+a long silence betrays a dead battery, a lost range or a stopped gateway. Beyond
+the threshold set in the plugin's configuration, two hours by default, the
+Health page reports it and the *Seen ago* command gives the figure.
+
+The plugin **never** flips presence on its own for this reason. Declaring absent
+someone you have no news from would arm the alarm on a person sitting in their
+living room — exactly what the whole design works to avoid. It reports it, you
+decide. And if you want to make a rule of it, the command is there: a condition
+on *Seen ago* is enough.
+
+#### Testing a rule without leaving home
+
+A person's panel carries three buttons — **Present**, **Absent**, **Hand control
+back**. While an override is active, the tag has no say, and both the panel and
+the card say so. This is what lets you write a departure rule on a Sunday
+afternoon and watch it fire without walking round the block. The override
+survives a restart: it is written in the device's configuration, not in a cache.
+
 An **arrival**, on the other hand, is published straight away. The asymmetry is
 deliberate: a missed arrival is a door that does not open and that you open by
 hand; an invented departure is an alarm arming on somebody sitting in their
@@ -134,6 +196,7 @@ have that problem.
 | **Status** | In plain words: "Present", "Absent", "Departure pending (7 min)", "Arrival pending". |
 | **Raw signal** | What the source says, with no delay. Created hidden, logged: it is what you compare with the presence to see what the delay absorbed. |
 | **For (min)** | How many minutes the presence has lasted. Created hidden. |
+| **Seen (min) ago** | How many minutes since the source last gave any sign of life. Not to be confused with the previous one: this speaks of the tag, not of the person. Created hidden. |
 | **Mode** | "Automatic", "Forced present" or "Forced absent". Created hidden. |
 | **Force present** / **Force absent** / **Automatic tracking** | Three actions to take over. Created hidden. |
 
@@ -197,6 +260,7 @@ and a household may contain only one.
 | **Everyone is home** | Every person of the household is present. Created hidden, logged. |
 | **Status** | "Empty", "Partial", "Full". Created hidden. |
 | **Empty for (min)** | How many minutes the house has been empty. Created hidden: it is what the time-based triggers read. |
+| **Occupied for (min)** | The mirror image, for the occupied house. Created hidden. |
 | **First to arrive** / **Last to leave** | Who opened up, who locked up. Created hidden. |
 | **Simulation mode** | 1 when this household is in simulation, for whatever reason. |
 | **Re-evaluate now** | Forces an immediate pass, without waiting for the next minute. Created hidden. |
@@ -385,9 +449,18 @@ acquitted it.
 
 ## The log
 
-Every household keeps its own log, in its **Log** tab: the last two hundred
-entries by default, the most recent first, with a filter by kind and a button to
-empty it.
+Every device keeps its own log, in its **Log** tab: the last two hundred entries
+by default, the most recent first, with a filter by kind, a button to export it
+and another to empty it.
+
+Households record their rules there, people their presence moves. A person who
+belongs to no household yet therefore keeps the trace of their bounces: that is
+the first day of the installation, the day you set the delays, and precisely the
+day when nothing must be lost.
+
+The **CSV export** serves the simulation campaign: a week of observation reads
+better in a spreadsheet, where you sort by verdict and count, than in a web page
+you scroll through.
 
 It is written to a file of the plugin's own, not to Jeedom's logs: it survives a
 reboot, it does not get drowned by the rest of the installation, and it does not
@@ -417,7 +490,7 @@ Reading that log now and then is the only maintenance the plugin asks for.
 ## The Health page
 
 Jeedom's **Health** page answers "is everything all right?" at a glance. The
-plugin counts only things there that do not show anywhere else — eleven checks,
+plugin counts only things there that do not show anywhere else — thirteen checks,
 not one of them decorative:
 
 | Check | What it catches |
@@ -431,6 +504,8 @@ not one of them decorative:
 | Households with no person | a household that is empty for good, whose departure rules fire into the void |
 | Data folder writable | without it the log is not written — and a simulation campaign leaves no trace at all |
 | Dead references in the rules | an action that no longer points at anything. Those fail silently |
+| Silent tags | a tag that claims to be present but has not emitted for a long time. See below: this is the failure that freezes a house on “occupied” forever |
+| People outside any household | they are followed, but no rule can fire on them |
 | Simulation mode | what is running without acting right now |
 
 The last two lines are the most useful in the long run. A dead action says

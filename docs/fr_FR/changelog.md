@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.1
+
+Cette version répare trois silences — des situations où le plugin ne faisait
+rien et ne disait rien — et ajoute de quoi régler un délai sur des mesures
+plutôt qu'à l'estime.
+
+- **Un foyer neuf rassemble les personnes déjà déclarées.** Il partait vide :
+  on écrivait ses règles, on enregistrait, et rien ne se déclenchait jamais,
+  sans erreur ni message, parce qu'un foyer sans habitant est vide en
+  permanence. Décocher quelqu'un prend un clic ; comprendre pourquoi rien ne
+  part prend une soirée.
+- **Chaque personne tient son propre journal.** Les mouvements de présence
+  n'étaient écrits que dans les foyers qui la contenaient : une personne
+  n'appartenant à aucun foyer — le cas de toute installation qui démarre —
+  voyait ses rebonds absorbés disparaître sans laisser de trace, alors que
+  c'est précisément ce que le mode simulation doit montrer. L'onglet Journal
+  est désormais celui des deux types d'équipement.
+- **Les balises muettes sont signalées.** Quand la pile d'une balise meurt
+  pendant que la personne est chez elle, le signal reste figé sur « présent » :
+  la présence ne bouge plus jamais, la maison ne devient plus jamais vide et
+  l'alarme ne peut plus s'armer. Une nouvelle commande dit depuis combien de
+  temps la balise a été vue, et la page Santé le relève. Le plugin ne bascule
+  jamais la présence de lui-même sur ce motif — déclarer absent quelqu'un dont
+  on n'a plus de nouvelles reviendrait à armer sur une personne assise dans son
+  salon. Il le signale, vous tranchez.
+- **Analyser la balise.** Un bouton relit l'historique de la commande suivie et
+  rejoue la décision pour huit délais de départ, avec la fonction même que le
+  cron utilise. Le tableau dit, sur vos données et pour cette balise-là,
+  combien de fausses absences chaque délai supprime, combien de vraies il
+  laisse passer, et ce qu'il coûte en présence tenue à tort. Le délai retenu
+  se pose dans le formulaire d'un clic. Deux balises d'une même maison n'ont
+  aucune raison de demander le même réglage, et c'est maintenant mesurable.
+- **Forcer la présence depuis la fiche.** Les deux commandes existaient mais
+  restaient invisibles : pour éprouver une règle, il fallait sortir de chez
+  soi.
+- **Exporter le journal en CSV.** Une semaine de campagne se relit dans un
+  tableur, où l'on trie par verdict et où l'on compte.
+- **Les personnes hors de tout foyer** sont relevées en page Santé.
+- Nouvelle commande **Occupée depuis** sur le foyer, symétrique de *Vide
+  depuis* : le compteur existait déjà, il n'était simplement jamais publié.
+
 ## 1.0
 
 Première version.

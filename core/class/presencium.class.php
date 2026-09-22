@@ -60,6 +60,10 @@ class presencium extends eqLogic {
     const CACHE_TEMPOREL = 'presencium::temporel::';
     const CACHE_JOURNAL_ECHEC = 'presencium::journalEchec::';
     const CACHE_PREMIERE_VUE = 'presencium::premiereVue::';
+    /* Au-delà, une balise qui se dit présente est tenue pour suspecte. Les
+     * Tile de cette installation battent toutes les cinq minutes tant
+     * qu'elles sont vues : deux heures de silence ne sont pas un hasard. */
+    const SILENCE_MAX_DEFAUT = 120;
 
     /* Un mois. Assez long pour qu'un foyer vide pendant les vacances garde la
      * date de son dernier départ, assez court pour que rien ne s'accumule
@@ -607,6 +611,14 @@ class presencium extends eqLogic {
             array('logicalId' => 'depuis', 'name' => __('Depuis (min)', __FILE__),
                   'type' => 'info', 'subType' => 'numeric', 'generic' => '',
                   'visible' => 0, 'historized' => 0, 'icon' => '', 'unite' => __('min', __FILE__)),
+            /* La fraîcheur du signal, et non la présence : une balise dont la
+             * pile meurt pendant que la personne est chez elle fige le signal
+             * sur « présent ». La présence ne bouge alors plus jamais, le foyer
+             * ne devient plus jamais vide, et l'alarme ne peut plus s'armer.
+             * Rien d'autre dans le plugin ne regarde la date de COLLECTE. */
+            array('logicalId' => 'vu_depuis', 'name' => __('Vu il y a (min)', __FILE__),
+                  'type' => 'info', 'subType' => 'numeric', 'generic' => '',
+                  'visible' => 0, 'historized' => 0, 'icon' => '', 'unite' => __('min', __FILE__)),
             array('logicalId' => 'mode', 'name' => __('Mode', __FILE__),
                   'type' => 'info', 'subType' => 'string', 'generic' => '',
                   'visible' => 0, 'historized' => 0, 'icon' => ''),
@@ -640,6 +652,9 @@ class presencium extends eqLogic {
                   'type' => 'info', 'subType' => 'string', 'generic' => '',
                   'visible' => 0, 'historized' => 0, 'icon' => ''),
             array('logicalId' => 'vide_depuis', 'name' => __('Vide depuis (min)', __FILE__),
+                  'type' => 'info', 'subType' => 'numeric', 'generic' => '',
+                  'visible' => 0, 'historized' => 0, 'icon' => '', 'unite' => __('min', __FILE__)),
+            array('logicalId' => 'occupee_depuis', 'name' => __('Occupée depuis (min)', __FILE__),
                   'type' => 'info', 'subType' => 'numeric', 'generic' => '',
                   'visible' => 0, 'historized' => 0, 'icon' => '', 'unite' => __('min', __FILE__)),
             array('logicalId' => 'premier', 'name' => __('Premier arrivé', __FILE__),
@@ -732,6 +747,7 @@ class presencium extends eqLogic {
             $verdict['source'] = false;
             $verdict['valeur'] = null;
             $verdict['signal_depuis'] = 0;
+            $verdict['vu_depuis'] = 0;
             $verdict['mode'] = $mode;
             $verdict['nom'] = $this->getName();
             $verdict['libelle'] = __('Sans source', __FILE__);
@@ -787,6 +803,16 @@ class presencium extends eqLogic {
         $verdict['source'] = true;
         $verdict['valeur'] = $valeur;
         $verdict['signal_depuis'] = $depuis;
+        /* La date de COLLECTE, à ne pas confondre avec celle de valeur : la
+         * seconde dit quand le signal a changé d'avis, la première quand on
+         * l'a entendu pour la dernière fois. Une balise qui répète « présent »
+         * toutes les cinq minutes puis se tait garde une date de valeur
+         * ancienne ET une date de collecte qui cesse d'avancer — et c'est la
+         * seconde, elle seule, qui trahit une pile morte. */
+        $collecte = (string) $source->getCollectDate();
+        $collecte = ($collecte === '') ? 0 : (int) strtotime($collecte);
+        $verdict['vu_depuis'] = ($collecte > 0 && $collecte <= $maintenant)
+                              ? (int) floor(($maintenant - $collecte) / 60) : 0;
         $verdict['mode'] = $mode;
         $verdict['nom'] = $this->getName();
 
@@ -906,6 +932,7 @@ class presencium extends eqLogic {
         $this->checkAndUpdateCmd('etat', $verdict['libelle']);
         $this->checkAndUpdateCmd('depuis', $minutes);
         $this->checkAndUpdateCmd('mode', self::libelleMode($verdict['mode']));
+        $this->checkAndUpdateCmd('vu_depuis', isset($verdict['vu_depuis']) ? (int) $verdict['vu_depuis'] : 0);
 
         $verdict['depuis'] = $minutes;
         $verdict['depuis_ts'] = (int) $memoire['depuis'];
@@ -988,6 +1015,18 @@ class presencium extends eqLogic {
      * que ce qu'on relit c'est l'histoire d'une maison, pas celle d'une balise
      * prise isolément. */
     private function journaliserPresence($_verdict, $_detail) {
+        /* Chez elle d'abord. Une personne qui n'appartient encore à aucun foyer
+         * — le cas de toute installation qui démarre — voyait sinon ses rebonds
+         * absorbés disparaître sans laisser de trace, alors que c'est
+         * exactement ce que le mode simulation doit montrer. */
+        $this->journalAjouter(array(
+            'genre' => 'presence',
+            'simulation' => $this->enSimulation(),
+            'personne' => (int) $this->getId(),
+            'nom' => $this->getName(),
+            'verdict' => $_verdict,
+            'detail' => $_detail,
+        ));
         foreach (self::foyersDe((int) $this->getId()) as $foyer) {
             $foyer->journalAjouter(array(
                 'genre' => 'presence',
@@ -1324,6 +1363,10 @@ class presencium extends eqLogic {
         $this->checkAndUpdateCmd('etat', self::libelleEtatFoyer($nombre, (int) $_instantane['total']));
         $this->checkAndUpdateCmd('vide_depuis', ($occupe === 1 || (int) $etats['vide_depuis'] <= 0)
             ? 0 : (int) floor(($_maintenant - (int) $etats['vide_depuis']) / 60));
+        /* Le compteur existait déjà en cache pour le déclencheur « occupée
+         * depuis » ; il n'était simplement jamais publié. */
+        $this->checkAndUpdateCmd('occupee_depuis', ($occupe === 0 || (int) $etats['occupee_depuis'] <= 0)
+            ? 0 : (int) floor(($_maintenant - (int) $etats['occupee_depuis']) / 60));
         $this->checkAndUpdateCmd('premier', $etats['premier']);
         $this->checkAndUpdateCmd('dernier', $etats['dernier']);
         $this->checkAndUpdateCmd('en_service', ($this->getConfiguration('etat_en_service', 0) == 1) ? 1 : 0);
@@ -2213,7 +2256,12 @@ class presencium extends eqLogic {
      */
     public function journalAjouter($_entree) {
         try {
-            if ($this->type() !== self::TYPE_FOYER || (int) $this->getId() <= 0) {
+            /* Le journal n'est plus réservé aux foyers. Une personne qui
+             * n'appartient à aucun foyer voyait ses rebonds absorbés partir
+             * dans le vide : la campagne de simulation tournait et
+             * n'enregistrait rien, alors que c'est précisément ce qu'on lui
+             * demande de montrer. */
+            if ((int) $this->getId() <= 0) {
                 return false;
             }
             $entree = is_array($_entree) ? $_entree : array('detail' => (string) $_entree);
@@ -2397,6 +2445,156 @@ class presencium extends eqLogic {
         return $this->journalEcrire($entrees);
     }
 
+    /* ============================================================== ANALYSE */
+
+    /*
+     * Relit l'historique d'une commande de présence et rejoue la décision pour
+     * plusieurs délais de départ. C'est l'analyse qu'on ferait à la main, en
+     * relevant les absences une à une dans les graphiques — sauf qu'elle se
+     * fait sur les données de CETTE balise, et pas sur une moyenne.
+     *
+     * Le raisonnement tient en une phrase : une absence brute courte est
+     * presque toujours un décrochage, une absence longue est presque toujours
+     * un vrai départ, et le bon délai est le plus petit qui sépare les deux.
+     * Le seuil qui définit « longue » est un réglage, pas une vérité : sur une
+     * maison où l'on sort faire une course de vingt minutes, il doit descendre.
+     *
+     * La décision est rejouée par presenciumPersonne::evaluer(), la même
+     * fonction que le cron appelle. L'analyse ne peut donc pas diverger de ce
+     * que le plugin fera vraiment.
+     */
+    public static function analyserSource($_cmdId, $_jours = 7, $_valeurPresente = '1', $_seuilVrai = 60) {
+        $cmd = cmd::byId((int) $_cmdId);
+        if (!is_object($cmd)) {
+            throw new Exception(__('Commande introuvable.', __FILE__));
+        }
+        if ($cmd->getType() !== 'info') {
+            throw new Exception(__('Ce n\'est pas une commande d\'information.', __FILE__));
+        }
+        if ($cmd->getIsHistorized() != 1) {
+            throw new Exception(__('Cette commande n\'est pas historisée : sans historique, il n\'y a rien à analyser. Activez l\'historisation, puis revenez dans quelques jours.', __FILE__));
+        }
+
+        $jours = max(1, min(90, (int) $_jours));
+        $seuilVrai = max(5, min(720, (int) $_seuilVrai));
+        $fin = time();
+        $debut = $fin - ($jours * 86400);
+
+        $points = $cmd->getHistory(date('Y-m-d H:i:s', $debut), date('Y-m-d H:i:s', $fin));
+        if (!is_array($points) || count($points) === 0) {
+            throw new Exception(__('Aucun historique sur cette période.', __FILE__));
+        }
+
+        /* Les transitions, et elles seules : l'historique d'une balise répète
+         * la même valeur toutes les cinq minutes, et compter ces répétitions
+         * comme des événements fausserait tout. */
+        $transitions = array();
+        $precedent = null;
+        foreach ($points as $point) {
+            $ts = strtotime($point->getDatetime());
+            $brut = presenciumPersonne::estPresentBrut($point->getValue(), $_valeurPresente) ? 1 : 0;
+            if ($ts <= 0) {
+                continue;
+            }
+            if ($precedent === null || $brut !== $precedent) {
+                $transitions[] = array('ts' => $ts, 'brut' => $brut);
+                $precedent = $brut;
+            }
+        }
+        if (count($transitions) === 0) {
+            throw new Exception(__('Aucun changement d\'état sur cette période.', __FILE__));
+        }
+
+        /* Les épisodes d'absence brute, fermés par le retour du signal ou par
+         * la fin de la période. Un épisode encore ouvert est écarté : sa durée
+         * n'est pas connue, et l'inclure fausserait le compte dans le sens le
+         * plus dangereux — celui qui fait croire à un vrai départ. */
+        $episodes = array();
+        for ($i = 0; $i < count($transitions); $i++) {
+            if ($transitions[$i]['brut'] !== 0) {
+                continue;
+            }
+            if (!isset($transitions[$i + 1])) {
+                continue;
+            }
+            $episodes[] = array(
+                'debut'   => $transitions[$i]['ts'],
+                'minutes' => (int) round(($transitions[$i + 1]['ts'] - $transitions[$i]['ts']) / 60),
+            );
+        }
+
+        $courtes = array();
+        $longues = array();
+        foreach ($episodes as $episode) {
+            if ($episode['minutes'] >= $seuilVrai) {
+                $longues[] = $episode;
+            } else {
+                $courtes[] = $episode;
+            }
+        }
+
+        $lignes = array();
+        foreach (array(0, 5, 10, 15, 20, 30, 45, 60) as $delai) {
+            $declares = 0;
+            $courtesPassees = 0;
+            $longuesVues = 0;
+            $tenuPresent = 0;
+            foreach ($episodes as $episode) {
+                /* Un épisode devient un départ déclaré dès qu'il dure plus que
+                 * le délai ; le temps « tenu présent à tort » est ce que le
+                 * délai a mangé, épisode par épisode. */
+                $tenuPresent += min($episode['minutes'], $delai);
+                if ($episode['minutes'] > $delai) {
+                    $declares++;
+                    if ($episode['minutes'] >= $seuilVrai) {
+                        $longuesVues++;
+                    } else {
+                        $courtesPassees++;
+                    }
+                }
+            }
+            $lignes[] = array(
+                'delai'        => $delai,
+                'departs'      => $declares,
+                'faux'         => $courtesPassees,
+                'vrais'        => $longuesVues,
+                'vrais_total'  => count($longues),
+                'tenu_present' => $tenuPresent,
+            );
+        }
+
+        /* Le délai recommandé : le plus petit de la liste qui ne laisse passer
+         * aucune absence courte sans perdre une seule absence longue. Aucun ne
+         * convient — c'est le cas d'une balise dont les décrochages durent plus
+         * longtemps qu'une vraie sortie — et on le dit plutôt que d'en désigner
+         * un au hasard. */
+        $recommande = null;
+        foreach ($lignes as $ligne) {
+            if ($ligne['faux'] === 0 && $ligne['vrais'] === count($longues)) {
+                $recommande = $ligne['delai'];
+                break;
+            }
+        }
+
+        return array(
+            'commande'    => $cmd->getHumanName(),
+            'jours'       => $jours,
+            'seuil_vrai'  => $seuilVrai,
+            'debut'       => date('Y-m-d H:i', $debut),
+            'fin'         => date('Y-m-d H:i', $fin),
+            'heures'      => (int) round(($fin - $debut) / 3600),
+            'points'      => count($points),
+            'transitions' => count($transitions),
+            'episodes'    => count($episodes),
+            'courtes'     => count($courtes),
+            'longues'     => count($longues),
+            'plus_longue_courte' => (count($courtes) > 0) ? max(array_column($courtes, 'minutes')) : 0,
+            'plus_courte_longue' => (count($longues) > 0) ? min(array_column($longues, 'minutes')) : 0,
+            'lignes'      => $lignes,
+            'recommande'  => $recommande,
+        );
+    }
+
     /* ============================================================= DÉCOUVERTE */
 
     /*
@@ -2473,6 +2671,8 @@ class presencium extends eqLogic {
         $sourceNonInfo = array();
         $sansEcouteur = array();
         $bloquees = array();
+        $muettes = array();
+        $orphelines = array();
         $foyersVides = array();
         $foyersSimules = array();
         $reglesMortes = array();
@@ -2498,6 +2698,31 @@ class presencium extends eqLogic {
                 try {
                     $verdict = $eqLogic->verdictPersonne($maintenant);
                     $reglages = presenciumPersonne::normaliserReglages($eqLogic->getConfiguration());
+                    /*
+                     * Une balise muette. La pile d'une Tile meurt pendant que
+                     * la personne est chez elle : le signal reste figé sur
+                     * « présent », la présence ne bouge plus jamais, le foyer
+                     * ne devient plus jamais vide et l'alarme ne peut plus
+                     * s'armer. Rien n'échoue, rien n'est journalisé — seule la
+                     * date de collecte, qui cesse d'avancer, le trahit.
+                     *
+                     * On le signale sans jamais basculer la présence de force :
+                     * déclarer absent quelqu'un dont on n'a plus de nouvelles
+                     * reviendrait à armer l'alarme sur une personne assise dans
+                     * son salon, ce que tout le reste du plugin s'applique à
+                     * éviter. C'est à l'utilisateur de trancher, une fois
+                     * prévenu.
+                     */
+                    $silenceMax = (int) self::reglageGlobal('silence_max', self::SILENCE_MAX_DEFAUT);
+                    $vu = isset($verdict['vu_depuis']) ? (int) $verdict['vu_depuis'] : 0;
+                    if ($silenceMax > 0 && $vu > $silenceMax && !empty($verdict['brut'])) {
+                        $muettes[] = $eqLogic->getHumanName() . ' (' . $vu . ' ' . __('min', __FILE__) . ')';
+                    }
+
+                    if (count(self::foyersDe((int) $eqLogic->getId())) === 0) {
+                        $orphelines[] = $eqLogic->getHumanName();
+                    }
+
                     $signal = isset($verdict['signal_depuis']) ? (int) $verdict['signal_depuis'] : 0;
                     if (isset($verdict['raison']) && $verdict['raison'] === 'depart_en_cours'
                         && $signal > 0
@@ -2600,6 +2825,18 @@ class presencium extends eqLogic {
             'result' => (count($bloquees) === 0) ? __('aucun', __FILE__) : implode(', ', $bloquees),
             'advice' => (count($bloquees) === 0) ? '' : __('Ces personnes attendent leur confirmation de départ depuis plus longtemps que leur délai : leur source ne porte sans doute pas de date de changement exploitable. Tant que cela dure, la maison ne devient jamais vide et l\'alarme ne peut pas s\'armer.', __FILE__),
             'state'  => (count($bloquees) === 0),
+        );
+        $sante[] = array(
+            'test'   => __('Balises muettes', __FILE__),
+            'result' => (count($muettes) === 0) ? __('aucune', __FILE__) : implode(', ', $muettes),
+            'advice' => (count($muettes) === 0) ? '' : __('Ces balises se disent présentes mais n\'émettent plus depuis longtemps — pile morte, hors de portée, passerelle arrêtée. Tant que cela dure, la personne reste présente pour toujours et l\'alarme ne peut plus s\'armer.', __FILE__),
+            'state'  => (count($muettes) === 0),
+        );
+        $sante[] = array(
+            'test'   => __('Personnes hors de tout foyer', __FILE__),
+            'result' => (count($orphelines) === 0) ? __('aucune', __FILE__) : implode(', ', $orphelines),
+            'advice' => (count($orphelines) === 0) ? '' : __('Ces personnes sont suivies mais n\'entrent dans aucun foyer : aucune règle ne peut se déclencher sur leur arrivée ni sur leur départ. Cochez-les dans un foyer.', __FILE__),
+            'state'  => (count($orphelines) === 0),
         );
         $sante[] = array(
             /* Sans écouteur, tout marche encore — une minute trop tard à chaque

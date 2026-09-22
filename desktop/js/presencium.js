@@ -438,11 +438,13 @@ function presenciumAppliquerType(_type) {
   var blocFoyer = document.getElementById('div_presenciumFoyer')
   if (blocFoyer !== null) { blocFoyer.style.display = estFoyer ? '' : 'none' }
 
-  var onglets = ['li_presenciumRegleTab', 'li_presenciumJournalTab']
-  for (var i = 0; i < onglets.length; i++) {
-    var onglet = document.getElementById(onglets[i])
-    if (onglet !== null) { onglet.style.display = estFoyer ? '' : 'none' }
-  }
+  /* Les règles appartiennent au foyer. Le journal, lui, appartient aux deux :
+     une personne y garde ses rebonds absorbés, et c'est le seul endroit où ils
+     se lisent tant qu'elle n'entre dans aucun foyer. */
+  var ongletRegles = document.getElementById('li_presenciumRegleTab')
+  if (ongletRegles !== null) { ongletRegles.style.display = estFoyer ? '' : 'none' }
+  var ongletJournal = document.getElementById('li_presenciumJournalTab')
+  if (ongletJournal !== null) { ongletJournal.style.display = (estFoyer || estPersonne) ? '' : 'none' }
 
   /* Masquer le <li> ne suffit pas : le coeur mémorise l'onglet actif dans
      window.location.hash et le panneau reste affiché d'un équipement à
@@ -450,7 +452,7 @@ function presenciumAppliquerType(_type) {
      personne montrait la personne sur un onglet qu'on vient de masquer :
      panneau vide, formulaire introuvable, et rien à l'écran pour l'expliquer. */
   if (!estFoyer) {
-    presenciumRamenerOnglet(['regletab', 'journaltab'])
+    presenciumRamenerOnglet(estPersonne ? ['regletab'] : ['regletab', 'journaltab'])
   }
 }
 
@@ -1916,6 +1918,89 @@ function presenciumEntreeJournal(_entree) {
   return bloc
 }
 
+/* Le tableau d'analyse d'une balise.
+   Chaque ligne est un délai de départ possible, rejoué sur l'historique réel de
+   CETTE balise par la fonction même que le cron utilise. Les deux colonnes qui
+   décident sont « faux départs » et « vrais départs » : le bon délai est le
+   plus petit qui met la première à zéro sans entamer la seconde. */
+function presenciumRenderAnalyse(_resultat) {
+  var sortie = document.getElementById('div_presenciumAnalyse')
+  if (sortie === null) { return }
+  sortie.innerHTML = ''
+  if (!isset(_resultat) || !isset(_resultat.lignes)) { return }
+
+  var resume = presenciumText('div', 'text-muted',
+    init(_resultat.heures, 0) + ' {{h d\'historique}} — ' + init(_resultat.episodes, 0) + ' {{absences}} : '
+    + init(_resultat.courtes, 0) + ' {{courtes}}, ' + init(_resultat.longues, 0) + ' {{longues}} (≥ '
+    + init(_resultat.seuil_vrai, 60) + ' {{min}})')
+  resume.style.cssText = 'font-size:11px;margin-bottom:4px;'
+  sortie.appendChild(resume)
+
+  var table = document.createElement('table')
+  table.className = 'table table-condensed table-bordered'
+  table.style.cssText = 'margin-bottom:6px;font-size:12px;'
+  var thead = document.createElement('thead')
+  var ligneEntete = document.createElement('tr')
+  var entetes = ['{{Délai}}', '{{Départs}}', '{{Faux}}', '{{Vrais}}', '{{Présence tenue à tort}}', '']
+  for (var e = 0; e < entetes.length; e++) {
+    var th = document.createElement('th')
+    th.textContent = entetes[e]
+    ligneEntete.appendChild(th)
+  }
+  thead.appendChild(ligneEntete)
+  table.appendChild(thead)
+
+  var tbody = document.createElement('tbody')
+  for (var i = 0; i < _resultat.lignes.length; i++) {
+    var l = _resultat.lignes[i]
+    var tr = document.createElement('tr')
+    var retenu = (isset(_resultat.recommande) && _resultat.recommande !== null
+                  && parseInt(l.delai, 10) === parseInt(_resultat.recommande, 10))
+    if (retenu) { tr.style.cssText = 'background:rgba(92,184,92,0.14);font-weight:700;' }
+
+    tr.appendChild(presenciumText('td', '', init(l.delai, 0) + ' {{min}}'))
+    tr.appendChild(presenciumText('td', '', String(init(l.departs, 0))))
+    tr.appendChild(presenciumText('td', parseInt(l.faux, 10) > 0 ? 'text-danger' : 'text-muted', String(init(l.faux, 0))))
+    tr.appendChild(presenciumText('td',
+      parseInt(l.vrais, 10) < parseInt(l.vrais_total, 10) ? 'text-danger' : 'text-muted',
+      init(l.vrais, 0) + ' / ' + init(l.vrais_total, 0)))
+    tr.appendChild(presenciumText('td', 'text-muted', init(l.tenu_present, 0) + ' {{min}}'))
+
+    var cellule = document.createElement('td')
+    if (retenu) {
+      var appliquer = document.createElement('a')
+      appliquer.className = 'btn btn-xs btn-success presenciumAppliquerDelai'
+      appliquer.setAttribute('data-delai', String(l.delai))
+      appliquer.innerHTML = '<i class="fas fa-check"></i> {{Appliquer}}'
+      cellule.appendChild(appliquer)
+    }
+    tr.appendChild(cellule)
+    tbody.appendChild(tr)
+  }
+  table.appendChild(tbody)
+  sortie.appendChild(table)
+
+  if (!isset(_resultat.recommande) || _resultat.recommande === null) {
+    /* Aucun délai ne sépare les deux familles : le dire vaut mieux que d'en
+       désigner un. Cela arrive quand les décrochages de la balise durent plus
+       longtemps qu'une vraie sortie — le réglage ne peut alors pas réparer ce
+       que le signal ne permet pas de distinguer. */
+    sortie.appendChild(presenciumText('div', 'alert alert-warning',
+      '{{Aucun délai ne sépare proprement les deux familles sur cette période : les décrochages de cette balise durent aussi longtemps que de vraies sorties. Allongez la fenêtre d\'analyse, ou revoyez le seuil de ce qu\'est une vraie absence.}}'))
+    return
+  }
+
+  var conseil = presenciumText('div', 'alert alert-success',
+    '{{Délai retenu :}} ' + _resultat.recommande + ' {{min}}. '
+    + '{{C\'est le plus petit qui ne laisse passer aucune fausse absence et ne perd aucune vraie.}} '
+    + ((parseInt(_resultat.plus_longue_courte, 10) > 0)
+        ? '{{La plus longue fausse absence mesurée dure}} ' + _resultat.plus_longue_courte + ' {{min}} ; '
+          + '{{la plus courte vraie,}} ' + _resultat.plus_courte_longue + ' {{min}}.'
+        : ''))
+  conseil.style.cssText = 'padding:6px 10px;margin:0;font-size:12px;'
+  sortie.appendChild(conseil)
+}
+
 /* Le journal du foyer ouvert, filtré par genre, la plus récente en tête. */
 function presenciumRenderJournal() {
   var conteneur = document.getElementById('div_presenciumJournal')
@@ -2062,6 +2147,8 @@ function printEqLogic(_eqLogic) {
     if (journal !== null) { journal.innerHTML = '' }
     var verdict = document.getElementById('div_presenciumVerdict')
     if (verdict !== null) { verdict.innerHTML = '' }
+    var analyse = document.getElementById('div_presenciumAnalyse')
+    if (analyse !== null) { analyse.innerHTML = '' }
 
     presenciumRenderAvertissements()
   } finally {
@@ -2069,10 +2156,8 @@ function printEqLogic(_eqLogic) {
   }
 
   if (type === 'personne') { presenciumChargerSources() }
-  if (type === 'foyer') {
-    presenciumChargerPersonnes()
-    presenciumRenderJournal()
-  }
+  if (type === 'foyer') { presenciumChargerPersonnes() }
+  if (type === 'personne' || type === 'foyer') { presenciumRenderJournal() }
   presenciumRafraichirVerdict()
 }
 
@@ -2337,17 +2422,92 @@ presenciumContainer.addEventListener('click', function (event) {
     return
   }
 
+  /* ---- appliquer le délai que l'analyse recommande */
+  if (cible = event.target.closest('.presenciumAppliquerDelai')) {
+    var champDelai = document.querySelector('.eqLogicAttr[data-l1key="configuration"][data-l2key="delai_depart"]')
+    if (champDelai !== null) {
+      champDelai.jeeValue(cible.getAttribute('data-delai'))
+      presenciumMarkModified()
+      jeedomUtils.showAlert({ message: '{{Délai posé dans le formulaire. Il faut encore sauvegarder l\'équipement.}}', level: 'success' })
+    }
+    return
+  }
+
+  /* ---- forcer la présence, pour éprouver une règle sans sortir de chez soi */
+  if (cible = event.target.closest('#bt_presenciumForcerPresent, #bt_presenciumForcerAbsent, #bt_presenciumAuto')) {
+    var idForcage = presenciumCurrentId()
+    if (idForcage === null) { return }
+    var mode = cible.id === 'bt_presenciumForcerPresent' ? 'present'
+             : (cible.id === 'bt_presenciumForcerAbsent' ? 'absent' : 'auto')
+    presenciumAjax('forcer', { id: idForcage, mode: mode }, function () {
+      presenciumRafraichirVerdict()
+      presenciumRenderJournal()
+      jeedomUtils.showAlert({
+        message: (mode === 'auto')
+          ? '{{La balise reprend la main.}}'
+          : '{{Forçage posé. La balise n\'a plus voix au chapitre jusqu\'à ce que vous rendiez la main.}}',
+        level: 'success'
+      })
+    }, { button: cible })
+    return
+  }
+
+  /* ---- exporter le journal */
+  if (cible = event.target.closest('#bt_presenciumExporterJournal')) {
+    var idExport = presenciumCurrentId()
+    if (idExport === null) { return }
+    presenciumAjax('journalCsv', { id: idExport }, function (csv) {
+      if (!isset(csv) || String(csv) === '') {
+        jeedomUtils.showAlert({ message: '{{Le journal est vide : rien à exporter.}}', level: 'warning' })
+        return
+      }
+      /* Le point d'ordre d'octets en tête : sans lui, les accents d'un journal
+         français s'affichent en charabia dans un tableur, et on croit le
+         fichier abîmé. */
+      var lien = document.createElement('a')
+      lien.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }))
+      lien.download = 'presencium-' + idExport + '-' + (new Date()).toISOString().substring(0, 10) + '.csv'
+      document.body.appendChild(lien)
+      lien.click()
+      document.body.removeChild(lien)
+      URL.revokeObjectURL(lien.href)
+    }, { button: cible })
+    return
+  }
+
+  /* ---- analyser l'historique de la balise */
+  if (cible = event.target.closest('#bt_presenciumAnalyser')) {
+    var idAnalyse = presenciumCurrentId()
+    if (idAnalyse === null) { return }
+    var sortieAnalyse = document.getElementById('div_presenciumAnalyse')
+    if (sortieAnalyse !== null) {
+      sortieAnalyse.innerHTML = ''
+      sortieAnalyse.appendChild(presenciumText('div', 'text-muted', '{{Lecture de l\'historique…}}'))
+    }
+    presenciumAjax('analyser', {
+      id: idAnalyse,
+      jours: presenciumEntier((document.getElementById('in_presenciumAnalyseJours') || {}).value, 7, 1, 90),
+      seuil: presenciumEntier((document.getElementById('in_presenciumAnalyseSeuil') || {}).value, 60, 5, 720)
+    }, function (resultat) {
+      presenciumRenderAnalyse(resultat)
+    }, {
+      button: cible,
+      failure: function (message) {
+        if (sortieAnalyse === null) { return }
+        sortieAnalyse.innerHTML = ''
+        sortieAnalyse.appendChild(presenciumText('div', 'alert alert-warning', String(message || '')))
+      }
+    })
+    return
+  }
+
   /* ---- réévaluation immédiate, si la page en propose le bouton */
   if (cible = event.target.closest('#bt_presenciumEvaluer')) {
     var idEvaluation = presenciumCurrentId()
     if (idEvaluation === null) { return }
     presenciumAjax('evaluer', { id: idEvaluation }, function () {
       presenciumRafraichirVerdict()
-      /* Le journal appartient au foyer : le relire sur une personne envoyait
-         une requête que le serveur refuse — à juste titre — et le refus
-         s'affichait comme une panne de la réévaluation, qui elle avait
-         parfaitement réussi. */
-      if (presenciumType() === 'foyer') { presenciumRenderJournal() }
+      presenciumRenderJournal()
       jeedomUtils.showAlert({ message: '{{Réévaluation faite.}}', level: 'success' })
     }, { button: cible })
     return

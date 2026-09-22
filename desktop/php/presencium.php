@@ -424,6 +424,44 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
                                     </div>
                                 </div>
                             </fieldset>
+
+                            <fieldset>
+                                <legend><i class="fas fa-vial"></i> {{Éprouver et régler}}</legend>
+
+                                <div class="form-group">
+                                    <label class="col-sm-4 control-label">
+                                        {{Forcer la présence}}
+                                        <sup><i class="fas fa-question-circle" title="{{Pour éprouver une règle sans sortir de chez vous. Le forçage remplace le signal de la balise jusqu'à ce que vous rendiez la main au suivi automatique ; il survit à un redémarrage.}}"></i></sup>
+                                    </label>
+                                    <div class="col-sm-7">
+                                        <a class="btn btn-sm btn-success" id="bt_presenciumForcerPresent"><i class="fas fa-user"></i> {{Présent}}</a>
+                                        <a class="btn btn-sm btn-default" id="bt_presenciumForcerAbsent"><i class="fas fa-user-slash"></i> {{Absent}}</a>
+                                        <a class="btn btn-sm btn-default" id="bt_presenciumAuto"><i class="fas fa-magic"></i> {{Rendre la main}}</a>
+                                        <span class="help-block" style="margin:4px 0 0 0;">{{Tant qu'un forçage est actif, la balise n'a plus voix au chapitre. La fiche et la vignette le disent.}}</span>
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="col-sm-4 control-label">
+                                        {{Analyser la balise}}
+                                        <sup><i class="fas fa-question-circle" title="{{Relit l'historique de la commande suivie et rejoue la décision pour plusieurs délais de départ. Le tableau dit, sur VOS données, combien de faux départs chaque délai supprime et combien de vrais départs il laisse passer.}}"></i></sup>
+                                    </label>
+                                    <div class="col-sm-7">
+                                        <div class="input-group">
+                                            <span class="input-group-addon">{{sur}}</span>
+                                            <input type="number" min="1" max="90" step="1" class="form-control input-sm" id="in_presenciumAnalyseJours" value="7">
+                                            <span class="input-group-addon">{{jours, une vraie absence dure au moins}}</span>
+                                            <input type="number" min="5" max="720" step="5" class="form-control input-sm" id="in_presenciumAnalyseSeuil" value="60">
+                                            <span class="input-group-addon">{{min}}</span>
+                                            <span class="input-group-btn">
+                                                <a class="btn btn-sm btn-default" id="bt_presenciumAnalyser"><i class="fas fa-chart-line"></i> {{Analyser}}</a>
+                                            </span>
+                                        </div>
+                                        <span class="help-block" style="margin:4px 0 0 0;">{{La commande suivie doit être historisée, sinon il n'y a rien à relire.}}</span>
+                                        <div id="div_presenciumAnalyse"></div>
+                                    </div>
+                                </div>
+                            </fieldset>
                         </form>
                     </div>
 
@@ -529,6 +567,7 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
                                 <option value="alarme">{{Alarme}}</option>
                             </select>
                             <a class="btn btn-sm btn-default" id="bt_presenciumRafraichirJournal"><i class="fas fa-sync"></i> {{Rafraîchir}}</a>
+                            <a class="btn btn-sm btn-default" id="bt_presenciumExporterJournal" title="{{Une semaine de campagne se relit dans un tableur : on y trie par verdict et on compte.}}"><i class="fas fa-file-csv"></i> {{Exporter}}</a>
                             <a class="btn btn-sm btn-danger" id="bt_presenciumViderJournal"><i class="fas fa-trash"></i> {{Vider}}</a>
                         </span>
                     </legend>

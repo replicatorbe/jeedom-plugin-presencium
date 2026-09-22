@@ -107,5 +107,18 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
                 <span class="help-block" style="margin:0;">{{De 10 à 5000 entrées : au-delà de ces bornes, le plugin applique la plus proche sans le dire. Le journal garde aussi les mouvements de présence, dont les rebonds absorbés : c'est là que se lisent les faux positifs de vos détecteurs.}}</span>
             </div>
         </div>
+
+        <div class="form-group">
+            <label class="col-md-5 control-label">
+                {{Silence maximal d'une balise}}
+                <sup><i class="fas fa-question-circle" title="{{Une balise qui se dit présente mais n'émet plus depuis ce temps est signalée en page Santé. Le cas arrive quand une pile meurt pendant que la personne est chez elle : la présence se fige sur « présent » et la maison ne devient plus jamais vide.}}"></i></sup>
+            </label>
+            <div class="col-md-2">
+                <input type="number" min="0" max="10080" step="1" class="configKey form-control" data-l1key="silence_max" placeholder="120">
+            </div>
+            <div class="col-md-5">
+                <span class="help-block" style="margin:0;">{{En minutes, 0 pour ne rien contrôler. Le plugin ne bascule jamais la présence de lui-même sur ce motif : déclarer absent quelqu'un dont on n'a plus de nouvelles reviendrait à armer l'alarme sur une personne assise dans son salon. Il le signale, vous tranchez.}}</span>
+            </div>
+        </div>
     </fieldset>
 </form>

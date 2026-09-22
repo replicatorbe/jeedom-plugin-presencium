@@ -118,6 +118,73 @@ balise au profil incertain, passe une semaine en mode simulation avant qu'on
 lui confie une alarme.** C'est précisément à cela que sert ce mode, et c'est la
 seule façon de trancher des épisodes que la théorie ne tranche pas.
 
+#### Le régler sur vos mesures, pas sur les miennes
+
+Les chiffres ci-dessus sont ceux de deux balises Tile, dans une maison, pendant
+cinq jours. Les vôtres diront autre chose — et vos deux balises entre elles ne
+diront déjà pas la même chose.
+
+Le bouton **Analyser** de la fiche d'une personne fait donc le même travail sur
+votre installation. Il relit l'historique de la commande suivie, y découpe les
+absences, et rejoue la décision pour huit délais possibles — avec la fonction
+même que le cron emploie, si bien que l'analyse ne peut pas diverger de ce que
+le plugin fera vraiment. Il rend un tableau de cette forme :
+
+| Délai | Départs | Faux | Vrais | Présence tenue à tort |
+|---|---|---|---|---|
+| 0 min | 10 | **6** | 4 / 4 | 0 min |
+| 10 min | 6 | **2** | 4 / 4 | 82 min |
+| **15 min** | **4** | **0** | **4 / 4** | 108 min |
+| 30 min | 4 | 0 | 4 / 4 | 168 min |
+
+Le délai retenu est le plus petit qui met la colonne *Faux* à zéro sans entamer
+la colonne *Vrais*. Un clic le pose dans le formulaire — il reste à enregistrer
+l'équipement.
+
+Deux réglages commandent l'analyse. La **fenêtre** : une semaine suffit d'
+ordinaire, mais une balise qui décroche rarement demande à être observée plus
+longtemps. Et la durée à partir de laquelle **une absence est tenue pour vraie**,
+soixante minutes par défaut : c'est le seul jugement que la machine ne peut pas
+porter à votre place. Si vous sortez faire des courses de vingt minutes, elle
+doit descendre — sans quoi ces sorties-là seront comptées comme des décrochages
+et le délai proposé sera trop long.
+
+Il arrive qu'aucun délai ne convienne. Le plugin le dit au lieu d'en désigner un
+au hasard : cela signifie que les décrochages de cette balise durent aussi
+longtemps que de vraies sorties, et aucun réglage ne répare ce que le signal ne
+permet pas de distinguer. C'est le moment de regarder la balise elle-même — sa
+pile, sa portée, le nombre de passerelles qui l'entendent.
+
+#### Quand une balise se tait
+
+Il y a une panne que le délai de départ ne peut pas attraper, parce qu'elle ne
+ressemble pas à un départ. Si la pile d'une balise meurt **pendant que la
+personne est chez elle**, le signal reste figé sur « présent ». La présence ne
+bouge plus jamais, la maison ne devient plus jamais vide, et l'alarme ne peut
+plus s'armer. Rien n'échoue, rien n'est journalisé.
+
+Le plugin surveille donc la date à laquelle la balise a été *entendue* pour la
+dernière fois — ce qui n'est pas la date à laquelle elle a changé d'avis. Une
+balise Bluetooth bat régulièrement tant qu'elle est vue ; un long silence trahit
+une pile morte, une portée perdue ou une passerelle arrêtée. Au-delà du seuil
+réglé dans la configuration du plugin, deux heures par défaut, la page Santé la
+signale et la commande *Vu il y a* donne le chiffre.
+
+Le plugin ne bascule **jamais** la présence de lui-même sur ce motif. Déclarer
+absent quelqu'un dont on n'a plus de nouvelles reviendrait à armer l'alarme sur
+une personne assise dans son salon — exactement ce que toute la conception
+s'applique à éviter. Il le signale, vous tranchez. Et si vous voulez en faire
+une règle, la commande est là : une condition sur *Vu il y a* suffit.
+
+#### Éprouver une règle sans sortir de chez soi
+
+La fiche d'une personne porte trois boutons — **Présent**, **Absent**, **Rendre
+la main**. Tant qu'un forçage est actif, la balise n'a plus voix au chapitre, et
+la fiche comme la vignette le disent. C'est ce qui permet d'écrire une règle de
+départ un dimanche après-midi et de la voir partir sans avoir à faire le tour du
+pâté de maisons. Le forçage survit à un redémarrage : il est écrit dans la
+configuration de l'équipement, pas dans un cache.
+
 À l'inverse, une **arrivée** est publiée tout de suite. L'asymétrie est
 délibérée : une arrivée manquée, c'est une porte qui ne s'ouvre pas et qu'on
 ouvre à la main ; un départ inventé, c'est une alarme qui s'arme sur quelqu'un
@@ -136,6 +203,7 @@ secondes de confirmation évitent que la maison se réveille pour lui. Laissez-l
 | **État** | En clair : « Présent », « Absent », « Départ en cours (7 min) », « Arrivée en cours ». |
 | **Signal brut** | Ce que dit la source, sans délai. Créée masquée, historisée : c'est elle qu'on compare à la présence pour voir ce que le délai a absorbé. |
 | **Depuis (min)** | Depuis combien de minutes la présence dure. Créée masquée. |
+| **Vu il y a (min)** | Depuis combien de minutes la source n'a plus donné signe de vie. À ne pas confondre avec la précédente : celle-ci parle de la balise, pas de la personne. Créée masquée. |
 | **Mode** | « Automatique », « Forcé présent » ou « Forcé absent ». Créée masquée. |
 | **Forcer présent** / **Forcer absent** / **Suivi automatique** | Trois actions pour reprendre la main. Créées masquées. |
 
@@ -201,6 +269,7 @@ et un foyer peut n'en contenir qu'une.
 | **Tout le monde est là** | Toutes les personnes du foyer sont présentes. Créée masquée, historisée. |
 | **État** | « Vide », « Partiel », « Complet ». Créée masquée. |
 | **Vide depuis (min)** | Depuis combien de minutes la maison est vide. Créée masquée : c'est elle que lisent les déclencheurs temporels. |
+| **Occupée depuis (min)** | Le symétrique, pour la maison occupée. Créée masquée. |
 | **Premier arrivé** / **Dernier parti** | Qui a ouvert, qui a fermé. Créées masquées. |
 | **Mode simulation** | 1 quand ce foyer est en simulation, pour quelque raison que ce soit. |
 | **Réévaluer maintenant** | Force un passage immédiat, sans attendre la minute suivante. Créée masquée. |
@@ -400,9 +469,18 @@ journal l'a acquittée.
 
 ## Le journal
 
-Chaque foyer tient son propre journal, dans son onglet **Journal** : les deux
-cents dernières entrées par défaut, la plus récente en tête, avec un filtre par
-genre et un bouton pour le vider.
+Chaque équipement tient son propre journal, dans son onglet **Journal** : les
+deux cents dernières entrées par défaut, la plus récente en tête, avec un filtre
+par genre, un bouton pour l'exporter et un autre pour le vider.
+
+Les foyers y consignent leurs règles, les personnes leurs mouvements de
+présence. Une personne qui n'appartient encore à aucun foyer garde donc la trace
+de ses rebonds : c'est le premier jour d'installation, celui où l'on règle les
+délais, et c'est justement celui où il ne faut rien perdre.
+
+L'**export CSV** sert la campagne de simulation : une semaine d'observation se
+relit mieux dans un tableur, où l'on trie par verdict et où l'on compte, que
+dans une page web où l'on fait défiler.
 
 Il est écrit dans un fichier du plugin, pas dans les logs de Jeedom : il survit à
 un redémarrage, il ne se fait pas noyer par le reste de l'installation, et il ne
@@ -434,7 +512,7 @@ Lire ce journal de temps en temps est le seul entretien que le plugin demande.
 
 La page **Santé** de Jeedom répond d'un coup d'œil à « est-ce que tout va
 bien ? ». Le plugin n'y compte que des choses qui ne se voient pas autrement —
-onze lignes, dont aucune n'est décorative :
+treize lignes, dont aucune n'est décorative :
 
 | Contrôle | Ce qu'il rattrape |
 |---|---|
@@ -447,6 +525,8 @@ onze lignes, dont aucune n'est décorative :
 | Foyers sans personne | un foyer vide en permanence, dont les règles de départ partent dans le vide |
 | Dossier de données inscriptible | sans lui, le journal ne s'écrit pas — et une campagne de simulation ne laisse aucune trace |
 | Références mortes dans les règles | une action qui ne pointe plus sur rien. Celles-là échouent en silence |
+| Balises muettes | une balise qui se dit présente mais n'émet plus depuis longtemps. Voir plus bas : c'est la panne qui fige une maison à « occupée » pour toujours |
+| Personnes hors de tout foyer | elles sont suivies, mais aucune règle ne peut se déclencher sur elles |
 | Mode simulation | ce qui tourne à blanc en ce moment |
 
 Les deux dernières lignes sont les plus utiles à la longue. Une action morte ne
