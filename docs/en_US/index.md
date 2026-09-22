@@ -457,9 +457,15 @@ acquitted it.
 
 ## The log
 
-Every device keeps its own log, in its **Log** tab: the last two hundred entries
-by default, the most recent first, with a filter by kind, a button to export it
-and another to empty it.
+Every device keeps its own log, in its **Log** tab: a thousand entries kept by
+default, the last two hundred displayed, the most recent first, with a filter by
+kind, a button to export it and another to empty it.
+
+A line at the top says what the log covers — how many entries, how far back they
+go — and turns into a warning when it is full: the oldest ones have then gone,
+and the campaign you are reading back starts later than you think. It is the
+kind of detail without which you conclude "nothing fired all week" while only
+two days are in front of you.
 
 Households record their rules there, people their presence moves. A person who
 belongs to no household yet therefore keeps the trace of their bounces: that is

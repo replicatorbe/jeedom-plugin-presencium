@@ -478,9 +478,16 @@ journal l'a acquittée.
 
 ## Le journal
 
-Chaque équipement tient son propre journal, dans son onglet **Journal** : les
-deux cents dernières entrées par défaut, la plus récente en tête, avec un filtre
-par genre, un bouton pour l'exporter et un autre pour le vider.
+Chaque équipement tient son propre journal, dans son onglet **Journal** : mille
+entrées conservées par défaut, les deux cents dernières affichées, la plus
+récente en tête, avec un filtre par genre, un bouton pour l'exporter et un autre
+pour le vider.
+
+Une ligne en tête dit ce que le journal couvre — combien d'entrées, jusqu'où
+elles remontent — et passe en avertissement quand il est plein : ce sont alors
+les plus anciennes qui ont disparu, et la campagne qu'on relit commence plus
+tard qu'on ne croit. C'est le genre de détail sans lequel on conclut « rien ne
+s'est déclenché de la semaine » en n'ayant sous les yeux que deux jours.
 
 Les foyers y consignent leurs règles, les personnes leurs mouvements de
 présence. Une personne qui n'appartient encore à aucun foyer garde donc la trace

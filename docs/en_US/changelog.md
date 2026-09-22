@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.2
+
+This release fixes what the log was not saying. Three of the five points come
+from an evening spent reading back a real operational log: every time two
+timestamps had to be compared by hand to understand what had happened, it meant
+the plugin had a sentence to write and was not writing it.
+
+- **The false departure gets its own line, in red.** "Bounce absorbed" is only
+  said when the signal comes back *before* the delay expires — the happy case,
+  the one where the plugin did its job. When it comes back after, the departure
+  has been confirmed, the departure rules have fired and the alarm may have
+  armed: the log only wrote a departure, then an arrival ten minutes further
+  down, saying nothing of the link between the two. The only case that costs
+  something was the only one going unnoticed. An arrival that closes an absence
+  shorter than the real-absence threshold now writes its own verdict, with the
+  measured gap and the delay that was not enough. That threshold becomes a
+  plugin setting, one hour by default, shared with the *Analyse* button which
+  had it hard-coded.
+- **An override no longer disguises itself as a departure.** "Force absent"
+  produced a "so-and-so has left" entry indistinguishable from a real departure
+  — while a forced departure can arm the alarm. The gesture is now logged the
+  way arming already is, and the switch it causes carries the mode in full.
+- **The log says what it covers.** You read it back to conclude — "nothing
+  fired all week", "the tag did not bounce" — and those conclusions assume you
+  see the whole period. A line now announces how many entries there are, how
+  far back they go, and turns into a warning when the log is full: the oldest
+  ones have then gone for good, and the campaign starts later than you thought.
+  Retention goes from 200 to 1000 entries, two hundred covering only two days
+  where the documentation invites you to let it run for several.
+- **"For" no longer mixes two quantities.** The detail of a decision announced
+  "absent for 5 min" at the very second the departure had been confirmed: the
+  word referred to the state, the number to the age of the raw signal. The two
+  coincide on arrival and diverge on departures by the whole delay — meaning
+  the wrong figure was worth exactly the setting this log is read back to
+  choose. "For" is now the instant of the last confirmed change, the one the
+  *For* command publishes, and the signal's age stays beside it when it
+  differs.
+- **The analysis decides in seconds, like the engine.** The *Analyse* button
+  kept episodes in rounded minutes and compared with a strict ">", where the
+  engine decides in seconds with a ">=". A 15 min 12 s gap became "15", and the
+  table announced "no false absence" for a fifteen-minute delay that the plugin
+  would have crossed at the 900th second — it recommended exactly the delay
+  that lets through the gap it was asked to cover. It is the only figure that
+  screen exists to choose.
+
+And three fewer silent failures:
+
+- **Silent tags and stalled departures leave the Health page.** Neither gives
+  you any reason to suspect anything — everything keeps working, states are
+  published, rules run — and the Health page is only opened on a day you
+  already suspect something. They now write, once an hour, into Jeedom's
+  message centre, and the message removes itself as soon as the cause stops.
+- **The Health page says whether the core cron still runs.** This is the
+  failure that stops everything: delays never expire, waits never end, and
+  nothing changes on screen since the commands keep their last value, which
+  looks right. Thirteen green checks under a stopped cron mean nothing; the
+  page's first line now says so.
+- **A person's log opens.** It has existed since 1.1, but the tab fell on "this
+  device is not a household": the absorbed bounces of a person outside any
+  household — the case of every installation that starts up — stayed
+  unreadable. The panel now also adapts to the type opened, a person writing
+  neither rules nor alarm entries.
+
 ## 1.1
 
 This release fixes three silences — situations where the plugin did nothing and

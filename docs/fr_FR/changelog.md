@@ -1,5 +1,70 @@
 # Changelog
 
+## 1.2
+
+Cette version répare ce que le journal ne disait pas. Trois des cinq points
+viennent d'une soirée passée à relire un vrai journal d'exploitation : chaque
+fois qu'il a fallu comparer deux horodatages à la main pour comprendre ce qui
+s'était passé, c'est que le plugin avait une phrase à écrire et ne l'écrivait
+pas.
+
+- **Le faux départ a sa ligne, en rouge.** « Rebond absorbé » ne se dit que
+  lorsque le signal revient *avant* la fin du délai — le cas heureux, celui où
+  le plugin a fait son travail. Quand il revient après, le départ a été
+  confirmé, les règles de départ ont été jouées et l'alarme a pu s'armer : le
+  journal n'écrivait qu'un départ, puis une arrivée dix minutes plus loin, sans
+  rien dire du lien entre les deux. Le seul cas qui coûte cher était le seul à
+  passer inaperçu. L'arrivée qui clôt une absence plus courte que le seuil de
+  vraie absence écrit désormais son propre verdict, avec le creux mesuré et le
+  délai qui n'a pas suffi. Ce seuil devient un réglage du plugin, une heure par
+  défaut, partagé avec le bouton *Analyser* qui le codait en dur.
+- **Le forçage ne se déguise plus en départ.** « Forcer absent » produisait une
+  entrée « Untel est parti(e) » indiscernable d'un vrai départ — alors qu'un
+  départ forcé peut armer l'alarme. Le geste est journalisé comme l'armement
+  l'est déjà, et la bascule qu'il provoque porte le mode en toutes lettres.
+- **Le journal dit ce qu'il couvre.** On le relit pour conclure — « rien ne
+  s'est déclenché de la semaine », « la balise n'a pas rebondi » — et ces
+  conclusions supposent qu'on voie toute la période. Une ligne annonce
+  désormais le nombre d'entrées, jusqu'où elles remontent, et passe en
+  avertissement quand le journal est plein : ce sont alors les plus anciennes
+  qui ont disparu, et la campagne commence plus tard qu'on ne croyait. La
+  rétention passe de 200 à 1000 entrées, deux cents ne couvrant que deux jours
+  là où la documentation invite à laisser tourner plusieurs jours.
+- **« Depuis » ne mélange plus deux grandeurs.** Le détail d'une décision
+  annonçait « absent depuis 5 min » à la seconde même où le départ venait
+  d'être confirmé : le mot se rapportait à l'état, le nombre à l'âge du signal
+  brut. Les deux coïncident à l'arrivée et divergent aux départs de tout le
+  délai — c'est-à-dire que le chiffre faux valait exactement le réglage qu'on
+  relit ce journal pour choisir. « Depuis » est maintenant l'instant du dernier
+  changement confirmé, celui que la commande *Depuis* publie, et l'âge du
+  signal reste affiché à côté quand il diffère.
+- **L'analyse décide en secondes, comme le moteur.** Le bouton *Analyser*
+  gardait les épisodes en minutes arrondies et comparait par un « > » strict,
+  là où le moteur décide en secondes avec un « >= ». Un creux de 15 min 12 s
+  devenait « 15 », et le tableau annonçait « aucune fausse absence » pour un
+  délai de quinze minutes que le plugin, lui, aurait franchi à la 900e seconde
+  — il recommandait exactement le délai qui laisse passer le creux qu'on lui
+  demandait de couvrir. C'est le seul chiffre que cet écran sert à choisir.
+
+Et trois pannes muettes de moins :
+
+- **Les balises muettes et les départs qui n'aboutissent pas sortent de la page
+  Santé.** Ces deux-là ne donnent envie de soupçonner personne — tout continue
+  de fonctionner, les états sont publiés, les règles tournent — et la page
+  Santé ne s'ouvre que le jour où l'on soupçonne déjà quelque chose. Elles
+  écrivent maintenant, une fois par heure, dans le centre de messages de
+  Jeedom, et le message se retire de lui-même dès que la cause cesse.
+- **La page Santé dit si le cron du cœur passe encore.** C'est la panne qui
+  arrête tout : les délais n'expirent plus, les attentes ne se terminent plus,
+  et rien ne change à l'écran puisque les commandes gardent leur dernière
+  valeur, qui a l'air juste. Treize contrôles au vert sous un cron arrêté ne
+  veulent rien dire ; la première ligne de la page le dit désormais.
+- **Le journal d'une personne s'ouvre.** Il existait depuis la 1.1, mais
+  l'onglet tombait sur « cet équipement n'est pas un foyer » : les rebonds
+  absorbés d'une personne hors de tout foyer — le cas de toute installation qui
+  démarre — restaient illisibles. Le panneau se règle au passage sur le type
+  ouvert, une personne n'écrivant ni règle ni alarme.
+
 ## 1.1
 
 Cette version répare trois silences — des situations où le plugin ne faisait
