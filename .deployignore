@@ -5,3 +5,12 @@
 # Le jeu d'essai et les contrôles par réflexion n'existent que pour le
 # développement : ils n'ont rien à faire dans la racine web.
 tests/
+
+# Le journal d'un équipement, ses verrous et ses fichiers temporaires sont
+# produits à l'exécution, côté Jeedom. Sans ces exclusions, le --delete du
+# déploiement les emporte : une campagne de simulation de plusieurs jours
+# disparaîtrait au premier correctif déployé, c'est-à-dire exactement quand on
+# a le plus besoin de la relire.
+data/journal-*.json
+data/*.lock
+data/*.tmp
