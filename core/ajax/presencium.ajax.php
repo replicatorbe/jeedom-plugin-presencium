@@ -177,11 +177,26 @@ try {
          * positifs, c'est le pire mensonge possible : on en conclut que le
          * délai de départ peut être raccourci.
          */
-        $entrees = $eqLogic->journalLire($limite, (string) init('genre'));
-        if (!is_array($entrees)) {
-            $entrees = array();
+        /*
+         * Tout lire, compter, puis tronquer — et dire les deux nombres.
+         *
+         * La page n'affiche que les deux cents dernières entrées, mais le
+         * journal en garde mille : sans le total, « 200 entrées depuis mardi »
+         * laissait croire que la campagne commençait mardi, alors qu'elle
+         * remontait peut-être à la semaine précédente. Et quand le journal est
+         * plein, ce sont les plus anciennes qui ont disparu pour de bon : c'est
+         * exactement ce qu'il faut savoir avant de conclure quoi que ce soit de
+         * ce qu'on lit.
+         */
+        $toutes = $eqLogic->journalLire(presencium::JOURNAL_TAILLE_MAX, (string) init('genre'));
+        if (!is_array($toutes)) {
+            $toutes = array();
         }
-        ajax::success($entrees);
+        ajax::success(array(
+            'entrees' => array_slice($toutes, 0, $limite),
+            'total'   => count($toutes),
+            'taille'  => presencium::journalTaille(),
+        ));
     }
 
     if (init('action') == 'viderJournal') {
@@ -314,7 +329,7 @@ try {
             $source,
             init('jours', 7),
             $eqLogic->getConfiguration('valeur_presente', '1'),
-            init('seuil', 60)
+            init('seuil', presencium::reglageGlobal('seuil_vrai', presencium::SEUIL_VRAI_DEFAUT))
         ));
     }
 

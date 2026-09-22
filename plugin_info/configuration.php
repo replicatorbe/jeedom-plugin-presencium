@@ -93,7 +93,7 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
         <div class="form-group">
             <label class="col-md-4 control-label">
                 {{Entrées conservées}}
-                <sup><i class="fas fa-question-circle" title="{{Nombre d'entrées gardées par foyer. Le journal est un fichier qui ne grandit pas : au-delà de cette limite, les plus anciennes disparaissent. 200 couvre confortablement plusieurs jours ; montez la valeur pour une campagne de simulation longue.}}"></i></sup>
+                <sup><i class="fas fa-question-circle" title="{{Nombre d'entrées gardées par équipement. Le journal est un fichier qui ne grandit pas : au-delà de cette limite, les plus anciennes disparaissent. Un millier tient une dizaine de jours sur une installation ordinaire ; une heure de rebonds en consomme une vingtaine, et une campagne de simulation se relit sur plusieurs jours.}}"></i></sup>
             </label>
             <div class="col-md-2">
                 <!-- Le plancher est celui que le serveur applique réellement
@@ -101,10 +101,26 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
                      choisi ici : annoncer 20 alors que 10 passe fait croire
                      qu'une valeur plus basse est refusée, et surtout la saisie
                      et le comportement racontent deux histoires différentes. -->
-                <input type="number" min="10" max="5000" step="1" class="configKey form-control" data-l1key="journal_taille" placeholder="200">
+                <input type="number" min="10" max="5000" step="1" class="configKey form-control" data-l1key="journal_taille" placeholder="1000">
             </div>
             <div class="col-md-5">
                 <span class="help-block" style="margin:0;">{{De 10 à 5000 entrées : au-delà de ces bornes, le plugin applique la plus proche sans le dire. Le journal garde aussi les mouvements de présence, dont les rebonds absorbés : c'est là que se lisent les faux positifs de vos détecteurs.}}</span>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="col-md-4 control-label">
+                {{Seuil d'une vraie absence}}
+                <sup><i class="fas fa-question-circle" title="{{Au-delà de cette durée, une absence est tenue pour une vraie sortie ; en deçà, pour un décrochage de la balise. Le bouton « Analyser » s'en sert pour séparer les deux familles, et le journal pour signaler qu'un départ confirmé, suivi d'un retour bien plus tôt que ce seuil, était probablement faux.}}"></i></sup>
+            </label>
+            <div class="col-md-2">
+                <div class="input-group">
+                    <input type="number" min="0" max="1440" step="1" class="configKey form-control roundedLeft" data-l1key="seuil_vrai" placeholder="60">
+                    <span class="input-group-addon roundedRight">{{min}}</span>
+                </div>
+            </div>
+            <div class="col-md-5">
+                <span class="help-block" style="margin:0;">{{Une heure convient à presque toutes les maisons. Descendez-le si l'on sort régulièrement pour vingt minutes — sans quoi ces sorties-là seraient comptées comme des faux départs.}}</span>
             </div>
         </div>
 

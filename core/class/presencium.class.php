@@ -73,7 +73,17 @@ class presencium extends eqLogic {
      * indéfiniment dans la table cache. */
     const CACHE_DUREE = 2592000;
 
-    const JOURNAL_TAILLE_DEFAUT = 200;
+    /*
+     * Au-delà, une absence est tenue pour une vraie sortie ; en deçà, pour un
+     * décrochage de la balise. C'est le seuil que l'analyse emploie déjà pour
+     * séparer les deux familles, et celui qui permet au journal de dire qu'un
+     * départ confirmé était probablement faux. Une heure : on ne rentre pas
+     * d'une vraie sortie en moins de temps que ça, et aucun décrochage mesuré
+     * ici n'a duré aussi longtemps — entre les deux, il y a de la place.
+     */
+    const SEUIL_VRAI_DEFAUT = 60;
+
+    const JOURNAL_TAILLE_DEFAUT = 1000;
     const JOURNAL_TAILLE_MIN = 10;
     const JOURNAL_TAILLE_MAX = 5000;
 
@@ -1036,6 +1046,10 @@ class presencium extends eqLogic {
     public function rafraichirPersonne($_maintenant = null) {
         $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
         $verdict = $this->verdictPersonne($maintenant);
+        /* La même normalisation que celle qui a rendu le verdict, et jamais un
+         * (int) sur la configuration brute : un champ vide vaut 15 minutes
+         * pour la décision, et vaudrait zéro ici. */
+        $reglages = presenciumPersonne::normaliserReglages($this->getConfiguration());
 
         $cle = self::CACHE_PRESENCE . $this->getId();
         $memoire = cache::byKey($cle)->getValue(null);
@@ -1074,7 +1088,6 @@ class presencium extends eqLogic {
                  */
                 $signalDepuis = isset($verdict['signal_depuis']) ? (int) $verdict['signal_depuis'] : $maintenant;
                 $creux = max(0, min($maintenant, $signalDepuis) - (int) $memoire['brut_depuis']);
-                $reglages = presenciumPersonne::normaliserReglages($this->getConfiguration());
                 $this->journaliserPresence('rebond_absorbe', sprintf(
                     __('%1$s : signal perdu %2$s puis revenu — rebond absorbé par le délai de départ de %3$s min', __FILE__),
                     $this->getName(), self::duree($creux), (int) $reglages['delai_depart']));
@@ -1094,11 +1107,28 @@ class presencium extends eqLogic {
             $memoire['present'] = $present;
             $memoire['depuis'] = $this->instantStabilisation($verdict, $maintenant);
         } elseif ((int) $memoire['present'] !== $present) {
+            /* L'instant du changement PRÉCÉDENT, avant qu'il ne soit écrasé :
+             * c'est lui qui donne la durée de l'état qui vient de s'achever. */
+            $avantDepuis = (int) $memoire['depuis'];
             $memoire['present'] = $present;
             $memoire['depuis'] = $this->instantStabilisation($verdict, $maintenant);
-            $this->journaliserPresence(($present === 1) ? 'arrivee' : 'depart', sprintf(
+
+            $detail = sprintf(
                 ($present === 1) ? __('%s est arrivé(e)', __FILE__) : __('%s est parti(e)', __FILE__),
-                $this->getName()));
+                $this->getName());
+            /* Un départ obtenu par le bouton « Forcer absent » s'écrivait
+             * exactement comme un vrai : relu des semaines plus tard, rien ne
+             * permettait de distinguer une personne sortie d'une personne
+             * déclarée sortie à la main — alors que le second peut avoir armé
+             * l'alarme. */
+            if (isset($verdict['mode']) && $verdict['mode'] !== 'auto') {
+                $detail .= ' — ' . self::libelleMode($verdict['mode']);
+            }
+            $this->journaliserPresence(($present === 1) ? 'arrivee' : 'depart', $detail);
+
+            if ($present === 1) {
+                $this->signalerFauxDepart($verdict, $avantDepuis, $maintenant, $reglages);
+            }
         }
 
         cache::set($cle, $memoire, self::CACHE_DUREE);
@@ -1115,6 +1145,49 @@ class presencium extends eqLogic {
         $verdict['depuis'] = $minutes;
         $verdict['depuis_ts'] = (int) $memoire['depuis'];
         return $verdict;
+    }
+
+    /*
+     * Le départ qui vient de s'achever était-il faux ?
+     *
+     * Le « rebond absorbé » ne se dit que lorsque le signal revient AVANT la fin
+     * du délai : c'est le cas heureux, celui où le plugin a fait son travail.
+     * Quand le signal revient APRÈS, le départ a été confirmé, les règles de
+     * départ ont été jouées — l'alarme a pu s'armer — et le journal n'écrivait
+     * qu'un départ puis une arrivée, dix minutes plus loin, sans rien dire du
+     * lien entre les deux. C'est pourtant le seul cas qui coûte cher, et le
+     * seul qui dise que le délai est trop court.
+     *
+     * Le creux mesuré est celui du SIGNAL, d'un bout à l'autre : de l'instant
+     * où la balise s'est tue — la date du départ confirmé, moins le délai qui
+     * l'a produite — à celui où elle a reparlé. C'est le chiffre à comparer au
+     * délai, et c'est celui que l'analyse manipule.
+     *
+     * Rien n'est dit si la personne était forcée : le retour n'a alors aucun
+     * rapport avec sa balise, et l'arithmétique ne voudrait rien dire.
+     */
+    private function signalerFauxDepart($_verdict, $_avantDepuis, $_maintenant, $_reglages) {
+        if (isset($_verdict['mode']) && $_verdict['mode'] !== 'auto') {
+            return false;
+        }
+        $seuil = (int) self::reglageGlobal('seuil_vrai', self::SEUIL_VRAI_DEFAUT) * 60;
+        if ($seuil <= 0 || (int) $_avantDepuis <= 0) {
+            return false;
+        }
+        $delai = (int) $_reglages['delai_depart'] * 60;
+        $perdu = (int) $_avantDepuis - $delai;
+        $revenu = isset($_verdict['signal_depuis']) ? (int) $_verdict['signal_depuis'] : (int) $_maintenant;
+        $creux = $revenu - $perdu;
+        /* Un creux qui dépasse le seuil est une vraie sortie, et un creux
+         * négatif ou nul vient d'un cache reconstruit : dans les deux cas, on
+         * se tait plutôt que d'accuser le réglage à tort. */
+        if ($creux <= 0 || $creux >= $seuil) {
+            return false;
+        }
+        $this->journaliserPresence('faux_depart', sprintf(
+            __('%1$s : absent %2$s puis revenu — faux départ probable, le délai de départ de %3$s min n\'a pas suffi', __FILE__),
+            $this->getName(), self::duree($creux), (int) $_reglages['delai_depart']));
+        return true;
     }
 
     /* L'instant où la présence stabilisée a basculé : la fin du délai qui
@@ -1174,7 +1247,15 @@ class presencium extends eqLogic {
         $frais->save(true);
         $this->reporterConfiguration($frais, array('mode'));
 
-        log::add(__CLASS__, 'info', $this->getHumanName() . ' : ' . self::libelleMode($mode));
+        /* Le geste au journal, et pas seulement dans le log du plugin : c'est
+         * la CAUSE de la bascule qui va suivre, et le journal est l'endroit où
+         * l'on cherche pourquoi une alarme s'est armée. journaliserPresence()
+         * écrit aussi la ligne de log, l'ancienne devenait redondante. */
+        $this->journaliserPresence('forcage', sprintf(
+            ($mode === 'auto')
+                ? __('%1$s : %2$s — la balise reprend la main', __FILE__)
+                : __('%1$s : %2$s — la balise n\'a plus voix au chapitre', __FILE__),
+            $this->getName(), self::libelleMode($mode)));
 
         $maintenant = time();
         $verdict = $this->rafraichirPersonne($maintenant);

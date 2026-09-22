@@ -135,6 +135,12 @@ var presenciumVerdicts = {
   desactivee: { classe: 'default', texte: '{{Désactivée}}' },
   echec: { classe: 'danger', texte: '{{Échec}}' },
   rebond_absorbe: { classe: 'warning', texte: '{{Rebond absorbé}}' },
+  /* Le pendant malheureux du rebond absorbé : le signal est revenu APRÈS la fin
+     du délai, le départ a donc été confirmé et les règles jouées pour rien.
+     En danger, et non en avertissement : le rebond absorbé raconte ce que le
+     plugin a évité, celui-ci ce qu'il a laissé passer. */
+  faux_depart: { classe: 'danger', texte: '{{Faux départ probable}}' },
+  forcage: { classe: 'warning', texte: '{{Forçage}}' },
   arrivee: { classe: 'success', texte: '{{Arrivée}}' },
   depart: { classe: 'info', texte: '{{Départ}}' },
   essai: { classe: 'info', texte: '{{Essai manuel}}' }
@@ -2037,6 +2043,33 @@ function presenciumRenderAnalyse(_resultat) {
   sortie.appendChild(conseil)
 }
 
+/*
+ * Ce que le journal couvre, en une ligne, au-dessus de tout le reste.
+ *
+ * Un journal se relit pour conclure — « rien ne s'est déclenché de la semaine »,
+ * « la balise n'a pas rebondi ». Ces conclusions supposent qu'on voie toute la
+ * période, et rien ne le disait : ni combien d'entrées existent au-delà de
+ * celles qui s'affichent, ni jusqu'où elles remontent, ni si les plus anciennes
+ * ont déjà été effacées faute de place. Les trois se disent en une phrase.
+ */
+function presenciumCouvertureJournal(_entrees, _total, _taille) {
+  var plusAncienne = (_entrees.length > 0) ? String(init(_entrees[_entrees.length - 1].date, '')) : ''
+  var texte = (_total > _entrees.length)
+    ? (_entrees.length + ' {{entrées affichées sur}} ' + _total)
+    : (_total + ' {{entrée(s)}}')
+  if (plusAncienne !== '') {
+    texte += ', {{la plus ancienne du}} ' + plusAncienne
+  }
+  /* Plein veut dire que des entrées ont DÉJÀ disparu : la campagne qu'on relit
+     commence plus tard qu'on ne croit, et c'est le seul moment où le dire
+     change une conclusion. */
+  var plein = (_taille > 0 && _total >= _taille)
+  if (plein) {
+    texte += ' — {{le journal est plein, les plus anciennes ont été effacées. Montez « Entrées conservées » dans la configuration du plugin pour garder une campagne plus longue.}}'
+  }
+  return presenciumText('div', plein ? 'alert alert-warning' : 'text-muted', texte)
+}
+
 /* Le journal du foyer ouvert, filtré par genre, la plus récente en tête. */
 function presenciumRenderJournal() {
   var conteneur = document.getElementById('div_presenciumJournal')
@@ -2072,7 +2105,14 @@ function presenciumRenderJournal() {
     if (courant === null || String(courant) !== String(id)) { return }
 
     conteneur.innerHTML = ''
-    var entrees = Array.isArray(result) ? result : []
+    /* Le point d'entrée rendait un tableau nu avant de rendre le total : on
+       accepte les deux, faute de quoi un navigateur qui garde l'ancien script
+       en cache afficherait un journal vide sans rien expliquer. */
+    var charge = Array.isArray(result) ? { entrees: result, total: result.length, taille: 0 }
+                                       : (result || {})
+    var entrees = Array.isArray(charge.entrees) ? charge.entrees : []
+    var total = parseInt(init(charge.total, entrees.length), 10)
+    var taille = parseInt(init(charge.taille, 0), 10)
     /* Le serveur rend déjà la plus récente en tête ; le tri est refait ici
        parce qu'un journal restauré à la main peut arriver dans le désordre, et
        qu'un journal mal ordonné ne se lit pas du tout. */
@@ -2085,6 +2125,7 @@ function presenciumRenderJournal() {
           : '{{Aucune entrée de ce genre.}}'))
       return
     }
+    conteneur.appendChild(presenciumCouvertureJournal(entrees, total, taille))
     for (var i = 0; i < entrees.length; i++) {
       conteneur.appendChild(presenciumEntreeJournal(entrees[i]))
     }
