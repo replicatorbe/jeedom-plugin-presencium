@@ -160,9 +160,12 @@ class presencium extends eqLogic {
         foreach (self::byType(__CLASS__) as $eqLogic) {
             $vivants[(int) $eqLogic->getId()] = true;
             try {
-                if ($eqLogic->type() === self::TYPE_FOYER) {
-                    $eqLogic->journalTronquer();
-                }
+                /* Les deux familles tiennent un journal : une personne hors de
+                 * tout foyer y garde ses rebonds absorbés, et c'est le seul
+                 * endroit où ils se lisent. Ne retailler que les foyers
+                 * laissait ces journaux-là à leur ancienne taille pour
+                 * toujours après une baisse de `journal_taille`. */
+                $eqLogic->journalTronquer();
             } catch (Throwable $e) {
                 log::add(__CLASS__, 'debug', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
             }

@@ -44,10 +44,16 @@ try {
         if (!is_object($eqLogic) || $eqLogic->getEqType_name() != 'presencium') {
             throw new Exception(__('Équipement introuvable', __FILE__));
         }
-        /* Le type est revérifié pour la même raison : le journal et les règles
-         * n'existent que sur un foyer, et les demander à une personne rendrait
-         * une erreur PHP là où une phrase claire est attendue. */
-        if ($_type !== null && $eqLogic->getConfiguration('type') != $_type) {
+        /* Le type est revérifié pour la même raison : les règles n'existent
+         * que sur un foyer, et les demander à une personne rendrait une erreur
+         * PHP là où une phrase claire est attendue.
+         *
+         * Par type() et jamais par getConfiguration('type') : un équipement
+         * dont le champ a été perdu — copie, restauration partielle,
+         * configuration éditée à la main — est une personne pour tout le reste
+         * du plugin, et était ici un foyer. La page refusait alors de lui
+         * parler, ou pire, lui appliquait le traitement d'un foyer. */
+        if ($_type !== null && $eqLogic->type() !== $_type) {
             if ($_type == presencium::TYPE_FOYER) {
                 throw new Exception(__('Cet équipement n\'est pas un foyer.', __FILE__));
             }
@@ -97,7 +103,7 @@ try {
              * part prend une soirée. */
             $membres = array();
             foreach (presencium::byType('presencium') as $candidat) {
-                if ($candidat->getConfiguration('type') == presencium::TYPE_PERSONNE) {
+                if ($candidat->type() === presencium::TYPE_PERSONNE) {
                     $membres[] = (int) $candidat->getId();
                 }
             }
@@ -115,7 +121,7 @@ try {
     if (init('action') == 'personnes') {
         $retour = array();
         foreach (eqLogic::byType('presencium') as $eqLogic) {
-            if ($eqLogic->getConfiguration('type') != presencium::TYPE_PERSONNE) {
+            if ($eqLogic->type() !== presencium::TYPE_PERSONNE) {
                 continue;
             }
             $presence = null;
@@ -148,7 +154,12 @@ try {
      * c'est le seul endroit où se lisent ses rebonds tant qu'elle n'appartient
      * à aucun foyer. */
     if (init('action') == 'journal') {
-        $eqLogic = $getEqLogic(init('id'), presencium::TYPE_FOYER);
+        /* Sans type imposé : la 1.1 donne un journal aux deux familles, mais
+         * ce point d'entrée exigeait toujours un foyer. L'onglet Journal d'une
+         * personne s'ouvrait donc sur « Cet équipement n'est pas un foyer » —
+         * et ses rebonds absorbés, seule trace d'une balise qui hoquette
+         * quand elle n'entre dans aucun foyer, restaient illisibles. */
+        $eqLogic = $getEqLogic(init('id'));
         $limite = (int) init('limite', 200);
         if ($limite < 1) {
             $limite = 1;
@@ -223,7 +234,7 @@ try {
         unautorizedInDemo();
         $eqLogic = $getEqLogic(init('id'));
         $maintenant = time();
-        if ($eqLogic->getConfiguration('type') == presencium::TYPE_PERSONNE) {
+        if ($eqLogic->type() === presencium::TYPE_PERSONNE) {
             ajax::success($eqLogic->rafraichirPersonne($maintenant));
         }
         ajax::success($eqLogic->rafraichirFoyer($maintenant));
@@ -235,7 +246,7 @@ try {
     if (init('action') == 'verdict') {
         $eqLogic = $getEqLogic(init('id'));
         $maintenant = time();
-        if ($eqLogic->getConfiguration('type') == presencium::TYPE_PERSONNE) {
+        if ($eqLogic->type() === presencium::TYPE_PERSONNE) {
             ajax::success($eqLogic->verdictPersonne($maintenant));
         }
         $instantane = $eqLogic->instantane($maintenant);

@@ -446,6 +446,8 @@ function presenciumAppliquerType(_type) {
   var ongletJournal = document.getElementById('li_presenciumJournalTab')
   if (ongletJournal !== null) { ongletJournal.style.display = (estFoyer || estPersonne) ? '' : 'none' }
 
+  presenciumAppliquerTypeJournal(estPersonne)
+
   /* Masquer le <li> ne suffit pas : le coeur mémorise l'onglet actif dans
      window.location.hash et le panneau reste affiché d'un équipement à
      l'autre. Ouvrir un foyer, aller sur Journal, revenir, puis cliquer sur une
@@ -453,6 +455,40 @@ function presenciumAppliquerType(_type) {
      panneau vide, formulaire introuvable, et rien à l'écran pour l'expliquer. */
   if (!estFoyer) {
     presenciumRamenerOnglet(estPersonne ? ['regletab'] : ['regletab', 'journaltab'])
+  }
+}
+
+/*
+ * Le panneau Journal selon le type ouvert.
+ *
+ * Une personne n'écrit ni règle ni alarme : son journal ne contient que des
+ * mouvements de présence, dont les rebonds absorbés. Annoncer des règles
+ * au-dessus et proposer de filtrer dessus fait chercher pendant un moment ce
+ * qui ne s'y trouvera jamais, et conclure que le journal ne marche pas.
+ */
+function presenciumAppliquerTypeJournal(_estPersonne) {
+  var titre = document.getElementById('span_presenciumJournalTitre')
+  if (titre !== null) {
+    titre.textContent = _estPersonne ? '{{Journal de cette personne}}' : '{{Journal de ce foyer}}'
+  }
+
+  var intro = document.getElementById('div_presenciumJournalIntro')
+  if (intro !== null) {
+    intro.textContent = _estPersonne
+      ? '{{Le journal d\'une personne garde ses mouvements de présence : ses arrivées, ses départs, et surtout les rebonds absorbés — ceux-là seuls montrent ce que sa balise raconte vraiment, et c\'est sur eux que se règle le délai de départ.}}'
+      : '{{Le journal garde ce que le plugin a décidé, et pourquoi : les règles déclenchées, celles écartées par leurs conditions ou par leur horaire, et les mouvements de présence — dont les rebonds absorbés, qui montrent ce que votre détecteur raconte vraiment.}}'
+  }
+
+  /* Un filtre qui ne rend jamais rien fait douter du journal, pas du filtre. */
+  var filtre = document.getElementById('sel_presenciumFiltreJournal')
+  if (filtre === null) { return }
+  var reserves = ['regle', 'alarme']
+  for (var i = 0; i < filtre.options.length; i++) {
+    var option = filtre.options[i]
+    var masquee = (_estPersonne && reserves.indexOf(String(option.value)) !== -1)
+    option.style.display = masquee ? 'none' : ''
+    option.disabled = masquee
+    if (masquee && String(filtre.value) === String(option.value)) { filtre.value = 'tout' }
   }
 }
 
@@ -2009,7 +2045,7 @@ function presenciumRenderJournal() {
   if (id === null) {
     conteneur.innerHTML = ''
     conteneur.appendChild(presenciumText('div', 'alert alert-info',
-      '{{Enregistrez le foyer : le journal se remplit au fil des évaluations.}}'))
+      '{{Enregistrez l\'équipement : le journal se remplit au fil des évaluations.}}'))
     return
   }
 
@@ -2403,7 +2439,7 @@ presenciumContainer.addEventListener('click', function (event) {
        détruire sur un clic voisin de « Rafraîchir » ne peut pas être
        silencieux. */
     var boutonVider = cible
-    jeeDialog.confirm('{{Vider le journal de ce foyer ? Les entrées déjà écrites — règles jouées, rebonds absorbés, mouvements de présence — sont perdues définitivement, et c\'est sur elles que se relit une campagne de simulation.}}',
+    jeeDialog.confirm('{{Vider ce journal ? Les entrées déjà écrites — règles jouées, rebonds absorbés, mouvements de présence — sont perdues définitivement, et c\'est sur elles que se relit une campagne de simulation.}}',
       function (reponse) {
         if (reponse !== true) { return }
         presenciumAjax('viderJournal', { id: idJournal }, function () {

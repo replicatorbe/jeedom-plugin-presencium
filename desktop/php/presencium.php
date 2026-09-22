@@ -32,7 +32,7 @@ $eqLogics = eqLogic::byType($plugin->getId());
 $presenciumPersonnes = array();
 $presenciumFoyers = array();
 foreach ($eqLogics as $eqLogic) {
-    if ($eqLogic->getConfiguration('type') == presencium::TYPE_FOYER) {
+    if ($eqLogic->type() === presencium::TYPE_FOYER) {
         $presenciumFoyers[] = $eqLogic;
     } else {
         $presenciumPersonnes[] = $eqLogic;
@@ -554,11 +554,15 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
             <div role="tabpanel" class="tab-pane" id="journaltab">
                 <br>
                 <div class="col-xs-12">
-                    <div class="alert alert-info" style="margin:0 0 10px 0;">
+                    <!-- Le texte et le titre sont repris par le JS selon le type
+                         ouvert : une personne et un foyer n'écrivent pas les mêmes
+                         lignes, et annoncer des règles dans le journal d'une
+                         personne ferait chercher ce qui ne s'y trouve jamais. -->
+                    <div class="alert alert-info" style="margin:0 0 10px 0;" id="div_presenciumJournalIntro">
                         {{Le journal garde ce que le plugin a décidé, et pourquoi : les règles déclenchées, celles écartées par leurs conditions ou par leur horaire, et les mouvements de présence — dont les rebonds absorbés, qui montrent ce que votre détecteur raconte vraiment.}}
                     </div>
                     <legend>
-                        <i class="fas fa-clipboard-list"></i> {{Journal de ce foyer}}
+                        <i class="fas fa-clipboard-list"></i> <span id="span_presenciumJournalTitre">{{Journal de ce foyer}}</span>
                         <span class="pull-right">
                             <select class="form-control input-sm" id="sel_presenciumFiltreJournal" style="display:inline-block;width:auto;vertical-align:middle;">
                                 <option value="tout">{{Tout}}</option>
