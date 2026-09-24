@@ -47,8 +47,9 @@ in your installation. If your tag is there, one click is enough.
 
 **The "present" value.** What the signal reads when the person is there, `1` by
 default. The plugin is lenient when reading: with `1` as the present value it
-also accepts `on`, `true` and `present`, because gateways do not all publish the
-same thing.
+also accepts `1.0`, `on`, `true`, `present`, `home`, `detected`, `oui`, `yes`
+and their neighbours, regardless of case, because gateways do not all publish
+the same thing.
 
 **The departure confirmation**, in minutes. This is the setting that matters,
 and the next section is devoted to it.
@@ -178,6 +179,11 @@ living room — exactly what the whole design works to avoid. It reports it, you
 decide. And if you want to make a rule of it, the command is there: a condition
 on *Seen ago* is enough.
 
+The same principle holds when the **source itself disappears** — the followed
+command has been deleted, or its plugin uninstalled. The person keeps their
+last state instead of being declared gone, and the Health page reports it on
+the *Missing sources* line. All that is left is to pick another source.
+
 #### Testing a rule without leaving home
 
 A person's panel carries three buttons — **Present**, **Absent**, **Hand control
@@ -195,6 +201,11 @@ The arrival confirmation exists all the same, in seconds, for the opposite case:
 a motion sensor in a corridor sees the cat go by, and thirty seconds of
 confirmation stop the house from waking up for it. Leave it at zero until you
 have that problem.
+
+It only applies to a real arrival, that of a person held to be absent. A signal
+that comes back **while a departure is pending** is not an arrival: it simply
+cancels the departure, at once, without going through the arrival confirmation
+— the person never stopped being present.
 
 ### What a person publishes
 
@@ -235,6 +246,12 @@ point of comparison used to spot arrivals and departures. No alarm decision
 depends on them — at worst, a counter that restarts and an “empty for thirty
 minutes” rule that counts its thirty minutes over again.
 
+What the rules have in progress, on the other hand, is written to disk, in the
+plugin's `data/` folder: a running **delay**, an unfinished **cooldown**, an
+**episode** already handled by a time-based rule. They survive a reboot as well
+as a cache flush: a delay that has started is not lost on the way, and a rule in
+cooldown does not start acting again because the box rebooted.
+
 ### When is the presence refreshed?
 
 Twice rather than once.
@@ -260,6 +277,12 @@ come afterwards.
 The same person can belong to several households — the house and the office —
 and a household may contain only one.
 
+**Changing a household's members fires nothing.** Adding a person is not an
+arrival, removing one is not a departure: no rule fires for the members added or
+removed. The other members are not forgotten, though — if one of them really
+arrives or leaves at the same moment, that genuine change is kept and its rules
+play as usual.
+
 | Command | What it says |
 |---|---|
 | **Presence** | At least one person present. Logged. This is the command to wire into your scenarios. |
@@ -271,6 +294,7 @@ and a household may contain only one.
 | **Occupied for (min)** | The mirror image, for the occupied house. Created hidden. |
 | **First to arrive** / **Last to leave** | Who opened up, who locked up. Created hidden. |
 | **Simulation mode** | 1 when this household is in simulation, for whatever reason. |
+| **Turn on simulation mode** / **Turn off simulation mode** | Raise and lower the household's simulation, from a scenario or the dashboard. They touch neither the plugin's simulation nor the rules': while the global simulation is on, turning the household's off still executes nothing. Created hidden. |
 | **Re-evaluate now** | Forces an immediate pass, without waiting for the next minute. Created hidden. |
 
 If you rename a command or change its visibility, the plugin will not argue: it
@@ -344,11 +368,16 @@ minutes of silence have gone by, not that a tag hiccuped.
 Three filters, which add up, all optional:
 
 - **A time range.** "Between 22:00 and 06:00". Nothing to fill in if the time of
-  day does not matter.
+  day does not matter. A time typed without zeros, such as `7:5`, reads as
+  07:05; a range whose start and end are equal covers the whole day.
 - **Days of the week.** Seven boxes; unticking a day suspends the rule that day.
 - **Condition lines.** Each one compares an information command of your
   installation with a value, using `==`, `!=`, `>`, `>=`, `<` or `<=`. **Every
-  line must be true** for the rule to act.
+  line must be true** for the rule to act. A line that asks about a command
+  **with no value** — deleted, or that has not published anything yet — is
+  false whatever the operator; only an `==` comparison with a value left empty
+  is then true, and that is the way to write "as long as this command has said
+  nothing".
 
 A condition line can ask about anything in Jeedom, not only the plugin: the
 alarm being enabled, a holiday mode, a garage door, one particular person's
@@ -396,7 +425,17 @@ check the whole chain through to the notification that lands on the phone.
 
 One single thing stops it: simulation. For as long as it is on, the test reports
 as usual and executes nothing — that is the very principle of the mode, and a
-test button making an exception would empty it of its meaning.
+test button making an exception would empty it of its meaning. It takes the
+simulation **as it is ticked on screen**, on the rule as on the household, even
+before you have saved: unticking a box and then testing does not arm the alarm
+for real without you meaning it to. And when no simulation applies, it asks for
+confirmation before executing.
+
+An action whose command cannot be found — deleted since the rule was written —
+is logged as **Failed**, no longer as "executed".
+
+`wait` and `sleep` actions placed in a rule are executed without blocking
+Jeedom's cron.
 
 ## Simulation mode
 
@@ -493,7 +532,7 @@ one by one, and the list of actions with theirs.
 | **Delay canceled** | the trigger reversed before the end: somebody came back. |
 | **Cooldown** | the rule acted less than its cooldown ago. |
 | **Disabled** | the rule exists but its box is unticked. |
-| **Failed** | an action did not go through. The error message is there. |
+| **Failed** | an action did not go through — including a command that can no longer be found. The error message is there. |
 
 The **presence** entries are the other half of the interest: arrivals, confirmed
 departures, and above all **bounces absorbed**. The **alarm** entries record
@@ -512,7 +551,7 @@ not one of them decorative:
 | Last evaluation | the core cron no longer runs. This is the failure that stops everything: departure delays never expire, rule waits never end, and the commands keep their last value — which looks right. While this line is red, the other thirteen mean nothing |
 | People tracked, Households | the head count, to spot a forgotten device |
 | People with no source | a person created and then never finished. It looks perfectly normal and stays absent for life |
-| Missing sources | the command has been deleted since |
+| Missing sources | the command has been deleted since. The person keeps their last state until another source is picked |
 | Sources that are not info commands | a button picked instead of a state: the person stays absent for ever |
 | Stalled departures | a person stuck in "Departure pending" past their delay. It is the symptom of a source with no usable date — and, while it shows, the house can no longer become empty |
 | Listeners installed | without a listener everything still works, but one minute late. It is the plugin's hardest failure to see |

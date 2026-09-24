@@ -1,18 +1,19 @@
 <?php
-/* This file is part of Jeedom.
+/* This file is part of Presencium, a plugin for Jeedom.
+ * Copyright (C) sMug (Jérôme Fafchamps)
  *
- * Jeedom is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
+ * Presencium is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
+ * Presencium is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with Jeedom. If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Presencium. If not, see <https://www.gnu.org/licenses/>.
  */
 
 /* La page de configuration d'un plugin est incluse par index.php, qui n'a
@@ -114,8 +115,12 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
                 <sup><i class="fas fa-question-circle" title="{{Au-delà de cette durée, une absence est tenue pour une vraie sortie ; en deçà, pour un décrochage de la balise. Le bouton « Analyser » s'en sert pour séparer les deux familles, et le journal pour signaler qu'un départ confirmé, suivi d'un retour bien plus tôt que ce seuil, était probablement faux.}}"></i></sup>
             </label>
             <div class="col-md-2">
+                <!-- Mêmes bornes que celles que l'analyse applique réellement
+                     (presencium::analyserSource borne le seuil entre 5 et
+                     720) : une valeur hors de ces bornes y serait ramenée
+                     sans le dire. -->
                 <div class="input-group">
-                    <input type="number" min="0" max="1440" step="1" class="configKey form-control roundedLeft" data-l1key="seuil_vrai" placeholder="60">
+                    <input type="number" min="5" max="720" step="1" class="configKey form-control roundedLeft" data-l1key="seuil_vrai" placeholder="60">
                     <span class="input-group-addon roundedRight">{{min}}</span>
                 </div>
             </div>
@@ -125,7 +130,7 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
         </div>
 
         <div class="form-group">
-            <label class="col-md-5 control-label">
+            <label class="col-md-4 control-label">
                 {{Silence maximal d'une balise}}
                 <sup><i class="fas fa-question-circle" title="{{Une balise qui se dit présente mais n'émet plus depuis ce temps est signalée en page Santé. Le cas arrive quand une pile meurt pendant que la personne est chez elle : la présence se fige sur « présent » et la maison ne devient plus jamais vide.}}"></i></sup>
             </label>

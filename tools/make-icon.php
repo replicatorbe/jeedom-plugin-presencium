@@ -14,6 +14,12 @@
  * pixels, où il ne reste qu'un toit et deux taches d'inégale densité.
  */
 
+/* Outil de développement : il écrit dans plugin_info/. Rien ne doit pouvoir le
+ * déclencher par le web, s'il venait à être copié dans la racine web. */
+if (PHP_SAPI !== 'cli') {
+    exit;
+}
+
 const TAILLE = 256;
 const ECHELLE = 4;
 

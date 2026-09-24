@@ -48,8 +48,9 @@ suffit.
 
 **La valeur « présent ».** Ce que vaut le signal quand la personne est là, `1`
 par défaut. Le plugin est souple à la lecture : avec `1` pour valeur présente,
-il accepte aussi `on`, `true` et `present`, parce que les passerelles ne
-publient pas toutes la même chose.
+il accepte aussi `1.0`, `on`, `true`, `present`, `home`, `detected`, `oui`,
+`yes` et leurs voisins, sans tenir compte des majuscules, parce que les
+passerelles ne publient pas toutes la même chose.
 
 **La confirmation de départ**, en minutes. C'est le réglage qui compte, et la
 section suivante lui est consacrée.
@@ -185,6 +186,11 @@ une personne assise dans son salon — exactement ce que toute la conception
 s'applique à éviter. Il le signale, vous tranchez. Et si vous voulez en faire
 une règle, la commande est là : une condition sur *Vu il y a* suffit.
 
+Le même principe vaut quand la **source elle-même disparaît** — la commande
+suivie a été supprimée, ou son plugin désinstallé. La personne garde son
+dernier état au lieu d'être déclarée partie, et la page Santé la signale dans
+la ligne *Sources disparues*. Il reste à lui désigner une autre source.
+
 #### Éprouver une règle sans sortir de chez soi
 
 La fiche d'une personne porte trois boutons — **Présent**, **Absent**, **Rendre
@@ -203,6 +209,11 @@ La confirmation d'arrivée existe quand même, en secondes, pour le cas inverse 
 un détecteur de mouvement dans un couloir voit passer le chat, et trente
 secondes de confirmation évitent que la maison se réveille pour lui. Laissez-la
 à zéro tant que vous n'avez pas ce problème.
+
+Elle ne vaut que pour une vraie arrivée, celle d'une personne tenue pour
+absente. Un signal qui revient **pendant un départ en cours** n'est pas une
+arrivée : il annule simplement le départ, tout de suite, sans passer par la
+confirmation d'arrivée — la personne n'a jamais cessé d'être présente.
 
 ### Ce que la personne publie
 
@@ -245,6 +256,13 @@ comparaison qui sert à repérer les arrivées et les départs. Aucune décision
 d'alarme n'en dépend — au pire, un compteur qui redémarre et une règle
 « vide depuis trente minutes » qui recompte ses trente minutes.
 
+Ce que les règles ont en cours, en revanche, est écrit sur le disque, dans le
+dossier `data/` du plugin : une **attente** qui court, un **repos** qui
+n'est pas fini, un **épisode** déjà traité par une règle temporelle. Ils
+survivent à un redémarrage comme à un vidage du cache : une attente commencée
+n'est pas perdue en route, et une règle au repos ne se remet pas à agir parce
+que la box a redémarré.
+
 ### Quand la présence est-elle rafraîchie ?
 
 Deux fois plutôt qu'une.
@@ -270,6 +288,12 @@ règles viendront après.
 Une même personne peut appartenir à plusieurs foyers — la maison et le bureau —
 et un foyer peut n'en contenir qu'une.
 
+**Modifier la composition d'un foyer ne déclenche rien.** Ajouter une personne
+n'est pas une arrivée, en retirer une n'est pas un départ : aucune règle ne
+tombe pour les membres ajoutés ou retirés. Les autres membres, eux, ne sont pas
+oubliés — si l'un d'eux arrive ou part pour de bon au même moment, ce vrai
+changement est conservé et ses règles jouent normalement.
+
 | Commande | Ce qu'elle dit |
 |---|---|
 | **Présence** | Au moins une personne présente. Historisée. C'est la commande à brancher dans vos scénarios. |
@@ -281,6 +305,7 @@ et un foyer peut n'en contenir qu'une.
 | **Occupée depuis (min)** | Le symétrique, pour la maison occupée. Créée masquée. |
 | **Premier arrivé** / **Dernier parti** | Qui a ouvert, qui a fermé. Créées masquées. |
 | **Mode simulation** | 1 quand ce foyer est en simulation, pour quelque raison que ce soit. |
+| **Activer la simulation** / **Arrêter la simulation** | Lèvent et baissent la simulation du foyer, depuis un scénario ou le tableau de bord. Elles ne touchent ni à celle du plugin ni à celle des règles : tant que la simulation globale est levée, arrêter celle du foyer n'exécute toujours rien. Créées masquées. |
 | **Réévaluer maintenant** | Force un passage immédiat, sans attendre la minute suivante. Créée masquée. |
 
 Si vous renommez une commande ou changez sa visibilité, le plugin ne vous
@@ -357,12 +382,18 @@ quinze minutes de silence se sont écoulées, pas que la balise a hoqueté.
 Trois filtres, cumulables, tous facultatifs :
 
 - **Une plage horaire.** « Entre 22:00 et 06:00 ». Rien à remplir si l'heure
-  n'a pas d'importance.
+  n'a pas d'importance. Une heure tapée sans zéros, comme `7:5`, se lit
+  07:05 ; une plage dont le début et la fin sont égaux couvre toute la
+  journée.
 - **Des jours de la semaine.** Les sept cases ; décocher un jour suspend la
   règle ce jour-là.
 - **Des lignes de condition.** Chacune compare une commande d'information de
   votre installation à une valeur, avec `==`, `!=`, `>`, `>=`, `<` ou `<=`.
   **Toutes les lignes doivent être vraies** pour que la règle agisse.
+  Une ligne qui interroge une commande **sans valeur** — supprimée, ou qui n'a
+  encore rien publié — est fausse, quel que soit l'opérateur ; seule une
+  comparaison `==` à une valeur laissée vide est alors vraie, et c'est la façon
+  d'écrire « tant que cette commande n'a rien dit ».
 
 Une ligne de condition peut interroger n'importe quoi dans Jeedom, pas seulement
 le plugin : l'alarme en service, un mode vacances, une porte de garage, la
@@ -413,7 +444,18 @@ notification qui arrive sur le téléphone.
 
 Une seule chose l'arrête : la simulation. Tant qu'elle est levée, l'essai rend
 compte comme d'habitude et n'exécute rien — c'est le principe même du mode, et
-un bouton d'essai qui ferait exception le viderait de son sens.
+un bouton d'essai qui ferait exception le viderait de son sens. Il prend la
+simulation **telle qu'elle est cochée à l'écran**, sur la règle comme sur le
+foyer, même si vous n'avez pas encore enregistré : décocher une case puis
+tester ne déclenche pas l'alarme pour de vrai sans que vous l'ayez voulu. Et
+quand aucune simulation ne s'applique, il demande confirmation avant
+d'exécuter.
+
+Une action dont la commande est introuvable — supprimée depuis l'écriture de la
+règle — est notée **échec** dans le journal, et non plus « exécutée ».
+
+Les actions `wait` et `sleep` placées dans une règle sont exécutées sans
+bloquer le cron de Jeedom.
 
 ## Le mode simulation
 
@@ -515,7 +557,7 @@ résultat une par une, et la liste des actions avec le leur.
 | **attente annulée** | le déclencheur s'est inversé avant la fin : quelqu'un est rentré. |
 | **repos** | la règle a déjà agi il y a moins que son délai d'anti-répétition. |
 | **désactivée** | la règle existe mais sa case est décochée. |
-| **échec** | une action n'est pas passée. Le message d'erreur est là. |
+| **échec** | une action n'est pas passée — y compris une commande devenue introuvable. Le message d'erreur est là. |
 
 Les entrées de genre **présence** sont l'autre moitié de l'intérêt : arrivées,
 départs confirmés, et surtout **rebonds absorbés**. Les entrées de genre
@@ -535,7 +577,7 @@ quatorze lignes, dont aucune n'est décorative :
 | Dernière évaluation | le cron du cœur ne passe plus. C'est la panne qui arrête tout : les délais de départ n'expirent plus, les attentes des règles ne se terminent plus, et les commandes gardent leur dernière valeur — qui a l'air juste. Tant que cette ligne est rouge, les treize autres ne veulent rien dire |
 | Personnes suivies, Foyers | le décompte, pour repérer un équipement oublié |
 | Personnes sans source | une personne créée puis jamais terminée. Elle a l'air normale et reste absente à vie |
-| Sources disparues | la commande a été supprimée depuis |
+| Sources disparues | la commande a été supprimée depuis. La personne garde son dernier état en attendant qu'on lui désigne une autre source |
 | Sources qui ne sont pas des informations | un bouton choisi à la place d'un état : la personne reste absente pour toujours |
 | Départs en cours bloqués | une personne dont le départ « en cours » dure au-delà de son délai. C'est le symptôme d'une source sans date exploitable — et, quand il apparaît, la maison ne peut plus devenir vide |
 | Écouteurs posés | sans écouteur, tout marche encore, mais avec une minute de retard. C'est la panne la plus difficile à voir du plugin |
