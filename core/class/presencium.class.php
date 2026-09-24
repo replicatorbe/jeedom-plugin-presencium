@@ -43,7 +43,9 @@ require_once __DIR__ . '/presenciumRegles.class.php';
  * silencieusement. Ce qui est gardé en cache ne sert qu'à détecter les FRONTS
  * (ce qui a changé depuis le passage précédent) ; ce qui doit vraiment survivre
  * — l'alarme en service, l'alarme armée, le mode forcé — est écrit dans la
- * configuration de l'équipement.
+ * configuration de l'équipement. La mémoire de décision d'un foyer (dernier
+ * instantané, attentes, repos, épisodes) vit dans data/etat-<id>.json : voir
+ * etatCharger().
  */
 class presencium extends eqLogic {
 
@@ -61,6 +63,9 @@ class presencium extends eqLogic {
     const CACHE_TEMPOREL = 'presencium::temporel::';
     const CACHE_JOURNAL_ECHEC = 'presencium::journalEchec::';
     const CACHE_PREMIERE_VUE = 'presencium::premiereVue::';
+    /* Secours de data/etat-<id>.json, posé seulement quand le fichier ne
+     * s'écrit pas : voir etatModifier(). */
+    const CACHE_ETAT = 'presencium::etat::';
     /* Sans identifiant d'équipement : c'est le battement du plugin entier, la
      * preuve que le cron du coeur passe encore. */
     const CACHE_CRON = 'presencium::cron';
@@ -142,6 +147,11 @@ class presencium extends eqLogic {
         }
     }
 
+    /* Personne → foyers, mémorisé pour ce processus : voir foyersDe(). Même
+     * règle du souligné que ci-dessus. */
+    private static $_foyersParPersonne = null;
+    private static $_foyersParPersonneDate = 0;
+
     /* ==================================================================== CRON */
 
     /*
@@ -217,11 +227,11 @@ class presencium extends eqLogic {
     /*
      * Une fois par jour : le journal.
      *
-     * Le ring buffer est tronqué à l'écriture, mais si l'utilisateur baisse
-     * `journal_taille` de 500 à 50, les fichiers déjà écrits garderaient 500
-     * entrées jusqu'à la prochaine écriture — et un foyer sans règle n'écrit
-     * jamais. On les retaille ici. Au passage, les journaux d'équipements
-     * supprimés à une époque où le plugin ne les nettoyait pas s'en vont.
+     * Le journal s'écrit par ajout en fin de fichier, sans jamais être relu :
+     * c'est ici qu'il est ramené à `journal_taille` entrées (journalAjouter()
+     * ne retaille qu'un fichier devenu deux fois trop long). Au passage, les
+     * fichiers d'équipements supprimés à une époque où le plugin ne les
+     * nettoyait pas s'en vont.
      */
     public static function cronDaily() {
         self::checkSimulation();
@@ -236,18 +246,22 @@ class presencium extends eqLogic {
                  * laissait ces journaux-là à leur ancienne taille pour
                  * toujours après une baisse de `journal_taille`. */
                 $eqLogic->journalTronquer();
+                if ($eqLogic->type() === self::TYPE_FOYER) {
+                    $eqLogic->etatElaguer();
+                }
             } catch (Throwable $e) {
                 log::add(__CLASS__, 'debug', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
             }
         }
 
-        /* Les deux familles de fichiers que le plugin pose dans data/ :
-         * `journal-<id>.json` avec son verrou, et `foyer-<id>.lock`, le verrou
-         * qui sérialise l'évaluation d'un foyer. Le nom est confronté à un motif
-         * plutôt qu'à un préfixe : un fichier étranger posé dans data/ ne doit
-         * pas être effacé sous prétexte qu'il commence par les bonnes lettres. */
+        /* Les familles de fichiers que le plugin pose dans data/ :
+         * `journal-<id>.jsonl` avec son verrou, `etat-<id>.json` avec le sien,
+         * et `foyer-<id>.lock`, le verrou qui sérialise l'évaluation d'un foyer.
+         * Le nom est confronté à un motif plutôt qu'à un préfixe : un fichier
+         * étranger posé dans data/ ne doit pas être effacé sous prétexte qu'il
+         * commence par les bonnes lettres. */
         foreach (ls(self::dossierDonnees(), '*', false, array('files', 'quiet')) as $fichier) {
-            if (!preg_match('/^(?:journal|foyer)-(\d+)\./', $fichier, $morceaux)) {
+            if (!preg_match('/^(?:journal|foyer|etat)-(\d+)\./', $fichier, $morceaux)) {
                 continue;
             }
             $chemin = self::dossierDonnees() . '/' . $fichier;
@@ -583,6 +597,8 @@ class presencium extends eqLogic {
     }
 
     public function postSave() {
+        /* La composition d'un foyer vient peut-être de changer. */
+        self::oublierFoyers();
         /* Une commande qui refuse de s'enregistrer ne doit pas priver la
          * personne de son écouteur. */
         try {
@@ -617,6 +633,7 @@ class presencium extends eqLogic {
     /* DB::remove() met l'identifiant à null avant postRemove : le nettoyage se
      * fait ici, tant qu'il est encore lisible. */
     public function preRemove() {
+        self::oublierFoyers();
         try {
             $this->removeListener();
         } catch (Throwable $e) {
@@ -636,13 +653,15 @@ class presencium extends eqLogic {
         try {
             $this->purgerCache();
             $this->journalVider();
+            $this->etatVider();
             /* Les verrous sont supprimés ici et nulle part ailleurs : effacer
              * le fichier d'un verrou qu'un autre processus tient encore lui
              * laisserait sa poignée tout en permettant à un troisième d'en
              * créer une autre — deux verrous distincts sur le même foyer,
              * c'est-à-dire plus de verrou du tout. Un équipement qu'on
              * supprime, lui, n'a plus personne pour l'évaluer. */
-            foreach (array($this->cheminVerrouFoyer(), $this->cheminJournal() . '.lock') as $verrou) {
+            foreach (array($this->cheminVerrouFoyer(), $this->cheminJournal() . '.lock',
+                           $this->cheminEtat() . '.lock') as $verrou) {
                 if (file_exists($verrou)) {
                     @unlink($verrou);
                 }
@@ -655,10 +674,13 @@ class presencium extends eqLogic {
 
     /* Efface tout ce que cet équipement a laissé en cache. Les attentes et les
      * repos portent l'identifiant de la règle : on repart de la configuration
-     * pour les retrouver, faute de pouvoir interroger le cache par préfixe. */
+     * pour les retrouver, faute de pouvoir interroger le cache par préfixe.
+     * Les clés d'instantané, d'attente, de repos et d'épisode ne sont plus
+     * écrites (voir etatModifier()) : on les efface pour les installations
+     * qui n'ont pas encore migré. */
     public function purgerCache() {
         $id = (int) $this->getId();
-        foreach (array(self::CACHE_PRESENCE, self::CACHE_INSTANTANE, self::CACHE_FOYER,
+        foreach (array(self::CACHE_PRESENCE, self::CACHE_INSTANTANE, self::CACHE_FOYER, self::CACHE_ETAT,
                        self::CACHE_PREMIERE_VUE, self::CACHE_JOURNAL_ECHEC, self::CACHE_REFAIRE) as $prefixe) {
             cache::delete($prefixe . $id);
         }
@@ -1510,29 +1532,67 @@ class presencium extends eqLogic {
         return $personnes;
     }
 
-    /* Les foyers qui contiennent cette personne. */
+    /*
+     * Les foyers qui contiennent cette personne.
+     *
+     * La correspondance personne → foyers est calculée une fois par processus
+     * (un byType() par passage de cron au lieu d'un par personne), et oubliée
+     * par postSave() et preRemove(). Ce sont les IDENTIFIANTS qui sont gardés,
+     * pas les objets : armer() ou basculerSimulation() écrivent la
+     * configuration d'un foyer par save(true), sans postSave, et un objet
+     * gardé en mémoire republierait l'état d'avant. Chaque appel relit donc
+     * ses foyers en base. La minute d'expiration couvre les processus longs.
+     */
     public static function foyersDe($_idPersonne) {
         $foyers = array();
         $id = (int) $_idPersonne;
         if ($id <= 0) {
             return $foyers;
         }
-        foreach (self::byType(__CLASS__, true) as $eqLogic) {
-            if ($eqLogic->type() !== self::TYPE_FOYER) {
-                continue;
-            }
-            $ids = $eqLogic->getConfiguration('personnes');
-            if (!is_array($ids)) {
-                continue;
-            }
-            foreach ($ids as $candidat) {
-                if ((int) $candidat === $id) {
-                    $foyers[] = $eqLogic;
-                    break;
+        $lus = array();
+        if (self::$_foyersParPersonne === null || (time() - self::$_foyersParPersonneDate) > 60) {
+            $carte = array();
+            foreach (self::byType(__CLASS__, true) as $eqLogic) {
+                if ($eqLogic->type() !== self::TYPE_FOYER) {
+                    continue;
+                }
+                $ids = $eqLogic->getConfiguration('personnes');
+                if (!is_array($ids)) {
+                    continue;
+                }
+                $lus[(int) $eqLogic->getId()] = $eqLogic;
+                foreach ($ids as $candidat) {
+                    $carte[(int) $candidat][(int) $eqLogic->getId()] = true;
                 }
             }
+            self::$_foyersParPersonne = $carte;
+            self::$_foyersParPersonneDate = time();
+        }
+        if (!isset(self::$_foyersParPersonne[$id])) {
+            return $foyers;
+        }
+        foreach (array_keys(self::$_foyersParPersonne[$id]) as $idFoyer) {
+            /* Lu juste au-dessus, l'objet est frais : inutile de le relire. */
+            $foyer = isset($lus[$idFoyer]) ? $lus[$idFoyer] : self::byId($idFoyer);
+            if (!is_object($foyer) || $foyer->getEqType_name() !== __CLASS__
+                || $foyer->getIsEnable() != 1 || $foyer->type() !== self::TYPE_FOYER) {
+                continue;
+            }
+            /* Une composition changée sans postSave ne doit pas garder la
+             * personne dans un foyer qu'elle a quitté. */
+            $ids = $foyer->getConfiguration('personnes');
+            if (!is_array($ids) || !in_array($id, array_map('intval', $ids), true)) {
+                continue;
+            }
+            $foyers[] = $foyer;
         }
         return $foyers;
+    }
+
+    /* À appeler dès qu'un équipement change : la correspondance sera refaite
+     * au prochain foyersDe(). */
+    private static function oublierFoyers() {
+        self::$_foyersParPersonne = null;
     }
 
     /*
@@ -1684,10 +1744,9 @@ class presencium extends eqLogic {
     private function rafraichirFoyerSousVerrou($_maintenant) {
         $instantane = $this->instantane($_maintenant);
 
-        $cleInstantane = self::CACHE_INSTANTANE . $this->getId();
-        $avant = cache::byKey($cleInstantane)->getValue(null);
+        $avant = $this->etatValeur('instantane');
         if (!is_array($avant) || !isset($avant['presents']) || !is_array($avant['presents'])) {
-            /* Premier passage, ou cache vidé : on part de l'instantané courant.
+            /* Premier passage, ou état perdu : on part de l'instantané courant.
              * Autrement, l'installation du plugin sur une maison occupée
              * fabriquerait une arrivée générale, et toutes les règles
              * d'arrivée partiraient d'un coup. */
@@ -1720,7 +1779,7 @@ class presencium extends eqLogic {
         $rendus = $this->jouerRegles($_maintenant, $transitions, $instantane);
 
         /* Les transitions sont consommées : l'instantané peut avancer. */
-        cache::set($cleInstantane, $instantane, self::CACHE_DUREE);
+        $this->etatPoser('instantane', null, $instantane);
 
         return array(
             'instantane'  => $instantane,
@@ -1742,8 +1801,7 @@ class presencium extends eqLogic {
      * serait ouverte jusqu'au prochain geste humain.
      */
     private function publierFoyer($_maintenant, $_instantane, $_arrives, $_partis) {
-        $cle = self::CACHE_FOYER . $this->getId();
-        $etats = cache::byKey($cle)->getValue(null);
+        $etats = $this->etatValeur('foyer');
         if (!is_array($etats)) {
             $etats = array('presence' => null, 'vide_depuis' => 0, 'occupee_depuis' => 0,
                            'premier' => '', 'dernier' => '');
@@ -1770,7 +1828,7 @@ class presencium extends eqLogic {
             }
             $etats['presence'] = $occupe;
         }
-        cache::set($cle, $etats, self::CACHE_DUREE);
+        $this->etatPoser('foyer', null, $etats);
 
         $this->checkAndUpdateCmd('presence', $occupe);
         $this->checkAndUpdateCmd('tous', ($_instantane['total'] > 0 && $nombre === (int) $_instantane['total']) ? 1 : 0);
@@ -1779,7 +1837,7 @@ class presencium extends eqLogic {
         $this->checkAndUpdateCmd('etat', self::libelleEtatFoyer($nombre, (int) $_instantane['total']));
         $this->checkAndUpdateCmd('vide_depuis', ($occupe === 1 || (int) $etats['vide_depuis'] <= 0)
             ? 0 : (int) floor(($_maintenant - (int) $etats['vide_depuis']) / 60));
-        /* Le compteur existait déjà en cache pour le déclencheur « occupée
+        /* Le compteur existait déjà dans l'état pour le déclencheur « occupée
          * depuis » ; il n'était simplement jamais publié. */
         $this->checkAndUpdateCmd('occupee_depuis', ($occupe === 0 || (int) $etats['occupee_depuis'] <= 0)
             ? 0 : (int) floor(($_maintenant - (int) $etats['occupee_depuis']) / 60));
@@ -2014,7 +2072,7 @@ class presencium extends eqLogic {
             return null;
         }
 
-        $etats = cache::byKey(self::CACHE_FOYER . $this->getId())->getValue(null);
+        $etats = $this->etatValeur('foyer');
         $debut = 0;
         if (is_array($etats)) {
             $debut = (int) (($_regle['declencheur'] === 'vide_depuis') ? $etats['vide_depuis'] : $etats['occupee_depuis']);
@@ -2023,11 +2081,10 @@ class presencium extends eqLogic {
             return null;
         }
 
-        $cle = self::CACHE_TEMPOREL . $this->getId() . '::' . $_regle['id'];
-        if ((int) cache::byKey($cle)->getValue(0) === $debut) {
+        if ((int) $this->etatValeur('temporel', $_regle['id'], 0) === $debut) {
             return null;
         }
-        cache::set($cle, $debut, self::CACHE_DUREE);
+        $this->etatPoser('temporel', $_regle['id'], $debut);
 
         return array('type' => $_regle['declencheur'], 'personne' => 0);
     }
@@ -2083,11 +2140,11 @@ class presencium extends eqLogic {
         $entree['detail'] = $this->detailPresence($maintenant, $instantane);
 
         if (!$_test && !$attenteTerminee && (int) $_regle['attente'] > 0) {
-            cache::set(self::CACHE_ATTENTE . $this->getId() . '::' . $_regle['id'], array(
+            $this->etatPoser('attentes', $_regle['id'], array(
                 'echeance'   => $maintenant + (int) $_regle['attente'] * 60,
                 'pose'       => $maintenant,
                 'transition' => isset($_contexte['transition']) ? $_contexte['transition'] : array(),
-            ), self::CACHE_DUREE);
+            ));
             $entree['detail'] = sprintf(__('en attente de %s min — %s', __FILE__),
                 (int) $_regle['attente'], $entree['detail']);
             return $this->conclureRegle($entree, 'en_attente');
@@ -2128,7 +2185,7 @@ class presencium extends eqLogic {
          * bon ; ceci reste la protection de ce qui ne passe pas par lui.)
          */
         if (!$_test) {
-            cache::set(self::CACHE_REPOS . $this->getId() . '::' . $_regle['id'], $maintenant, self::CACHE_DUREE);
+            $this->etatPoser('repos', $_regle['id'], $maintenant);
         }
 
         $entree['actions'] = $this->executerActions($_regle, $simulation, $_test);
@@ -2545,7 +2602,7 @@ class presencium extends eqLogic {
         if ($repos <= 0) {
             return false;
         }
-        $dernier = (int) cache::byKey(self::CACHE_REPOS . $this->getId() . '::' . $_regle['id'])->getValue(0);
+        $dernier = (int) $this->etatValeur('repos', $_regle['id'], 0);
         return ($dernier > 0 && ($_maintenant - $dernier) < $repos * 60);
     }
 
@@ -2571,15 +2628,14 @@ class presencium extends eqLogic {
              * ligne du journal de Jeedom.
              */
             try {
-                $cle = self::CACHE_ATTENTE . $this->getId() . '::' . $regle['id'];
-                $attente = cache::byKey($cle)->getValue(null);
+                $attente = $this->etatValeur('attentes', $regle['id']);
                 if (!is_array($attente) || !isset($attente['echeance'])) {
                     continue;
                 }
                 $transition = isset($attente['transition']) ? $attente['transition'] : array();
 
-                if ($this->declencheurInverse($regle, $transition, $_instantane)) {
-                    cache::delete($cle);
+                if (presenciumRegles::declencheurInverse($regle, $transition, $_instantane)) {
+                    $this->etatPoser('attentes', $regle['id'], null);
                     $rendus[] = $this->conclureRegle(array(
                         'genre'       => 'regle',
                         'simulation'  => $this->enSimulation($regle),
@@ -2601,7 +2657,7 @@ class presencium extends eqLogic {
                 }
                 /* Effacée AVANT d'agir : si une action lève, l'attente ne doit
                  * pas se rejouer à chaque minute jusqu'à la fin des temps. */
-                cache::delete($cle);
+                $this->etatPoser('attentes', $regle['id'], null);
                 $rendus[] = $this->executerRegle($regle, $_maintenant, array(
                     'transition'       => $transition,
                     'instantane'       => $_instantane,
@@ -2612,34 +2668,6 @@ class presencium extends eqLogic {
             }
         }
         return $rendus;
-    }
-
-    /* Le déclencheur d'une attente s'est-il inversé ?
-     *
-     * Une attente d'arrivée est annulée par un départ, et réciproquement. Pour
-     * les déclencheurs qui nomment quelqu'un, c'est l'état de cette personne
-     * précise qui compte ; pour les autres, celui du foyer. */
-    private function declencheurInverse($_regle, $_transition, $_instantane) {
-        $presents = $_instantane['presents'];
-        $nombre = count($presents);
-        $personne = (isset($_transition['personne']) && (int) $_transition['personne'] > 0)
-                  ? (int) $_transition['personne'] : 0;
-
-        switch ($_regle['declencheur']) {
-            case 'arrivee_premier':
-            case 'occupee_depuis':
-                return ($nombre === 0);
-            case 'depart_dernier':
-            case 'vide_depuis':
-                return ($nombre > 0);
-            case 'arrivee_tous':
-                return ($_instantane['total'] <= 0 || $nombre < (int) $_instantane['total']);
-            case 'arrivee':
-                return ($personne > 0) ? !isset($presents[$personne]) : ($nombre === 0);
-            case 'depart':
-                return ($personne > 0) ? isset($presents[$personne]) : ($nombre >= (int) $_instantane['total'] && $_instantane['total'] > 0);
-        }
-        return false;
     }
 
     /* Les noms des personnes du foyer, indexés par identifiant : ce que
@@ -2905,7 +2933,20 @@ class presencium extends eqLogic {
 
     /* ================================================================ JOURNAL */
 
+    /*
+     * Le journal est en JSON Lines : une entrée par ligne, la plus ancienne en
+     * haut, chaque nouvelle entrée AJOUTÉE en fin de fichier. L'ancien format,
+     * un tableau JSON, relisait et réécrivait jusqu'à cinq mille entrées pour
+     * en ajouter une — et un front de présence le faisait dans chaque foyer de
+     * la personne. L'extension change avec le format : l'un ne peut pas être
+     * pris pour l'autre, et l'ancien fichier est converti une fois (voir
+     * journalMigrer()).
+     */
     public function cheminJournal() {
+        return self::dossierDonnees() . '/journal-' . (int) $this->getId() . '.jsonl';
+    }
+
+    private function cheminJournalAncien() {
         return self::dossierDonnees() . '/journal-' . (int) $this->getId() . '.json';
     }
 
@@ -2922,16 +2963,13 @@ class presencium extends eqLogic {
     }
 
     /*
-     * Ajoute une entrée en tête du ring buffer.
+     * Ajoute une entrée en fin de journal, sans relire le fichier.
      *
-     * L'écriture est ATOMIQUE — fichier temporaire puis rename() — et ce n'est
-     * pas de la précaution gratuite : le journal est réécrit en entier à chaque
-     * entrée, et un cron tué au milieu d'un file_put_contents laisserait un
-     * JSON tronqué, c'est-à-dire un journal ENTIÈREMENT perdu à la lecture
-     * suivante. Le fichier temporaire est créé dans le même dossier pour que le
-     * rename reste un renommage à l'intérieur d'un même système de fichiers,
-     * seule condition sous laquelle il est atomique. Le PID le rend propre à ce
-     * processus : le cron et le listener écrivent en parallèle.
+     * Un cron tué au milieu d'une écriture ne coûte plus que sa propre ligne,
+     * que la lecture écarte : le reste du journal est intact. La rétention
+     * (`journal_taille`) est appliquée par cronDaily() ; ici, seulement quand
+     * le fichier a doublé, pour qu'un journal très bavard ne grossisse pas
+     * toute une journée.
      *
      * Rien de ce qui se passe ici ne doit interrompre une décision : écrire
      * l'histoire est moins important que la faire.
@@ -2954,18 +2992,53 @@ class presencium extends eqLogic {
             }
             $entree['simulation'] = !empty($entree['simulation']);
 
-            /* Lire, ajouter, réécrire : sans verrou, le cron et l'écouteur —
-             * qui tournent dans deux processus — lisent la même liste, y
-             * ajoutent chacun son entrée, et le second enregistrement écrase
-             * le premier. L'entrée perdue est justement celle qu'on vient
-             * relire pour comprendre un faux positif. */
+            $ligne = self::journalLigne($entree);
+            if ($ligne === false) {
+                return $this->journalEchec(self::dossierDonnees());
+            }
+
+            /* Le verrou reste nécessaire : le retaillage remplace le fichier
+             * par rename(), et une ligne ajoutée à l'ancien pendant ce temps
+             * partirait avec lui. Il sérialise aussi le cron et l'écouteur. */
             $verrou = $this->journalVerrou();
             try {
-                $entrees = $this->journalLire(self::journalTaille());
-                array_unshift($entrees, $entree);
-                $entrees = array_slice($entrees, 0, self::journalTaille());
-
-                return $this->journalEcrire($entrees);
+                $this->journalMigrer();
+                $chemin = $this->cheminJournal();
+                $dossier = dirname($chemin);
+                if (!is_dir($dossier) && !@mkdir($dossier, 0775, true) && !is_dir($dossier)) {
+                    return $this->journalEchec($dossier);
+                }
+                $nouveau = !file_exists($chemin);
+                $poignee = @fopen($chemin, 'a+');
+                if ($poignee === false) {
+                    return $this->journalEchec($dossier);
+                }
+                try {
+                    $infos = @fstat($poignee);
+                    $octets = is_array($infos) ? (int) $infos['size'] : 0;
+                    /* Une ligne laissée sans fin par un processus tué
+                     * collerait la nôtre à elle : les deux seraient perdues. */
+                    if ($octets > 0 && @fseek($poignee, -1, SEEK_END) === 0 && @fread($poignee, 1) !== "\n") {
+                        $ligne = "\n" . $ligne;
+                    }
+                    $ecrits = @fwrite($poignee, $ligne . "\n");
+                    @fflush($poignee);
+                } finally {
+                    @fclose($poignee);
+                }
+                if ($nouveau) {
+                    /* Le cron tourne en www-data, le déploiement sous un autre
+                     * compte : sans ce chmod, un journal écrit par l'un devient
+                     * illisible pour l'autre. */
+                    @chmod($chemin, 0664);
+                }
+                if ($ecrits !== strlen($ligne) + 1) {
+                    return $this->journalEchec($dossier);
+                }
+                if ($this->journalDeborde($octets + $ecrits)) {
+                    $this->journalRetailler();
+                }
+                return true;
             } finally {
                 $this->journalLibererVerrou($verrou);
             }
@@ -3038,29 +3111,163 @@ class presencium extends eqLogic {
         @fclose($_poignee);
     }
 
-    private function journalEcrire($_entrees) {
-        $chemin = $this->cheminJournal();
-        $dossier = dirname($chemin);
+    /* Une entrée, une ligne. json_encode n'émet jamais de saut de ligne brut :
+     * ceux des textes sont échappés. Un octet non UTF-8 est remplacé plutôt
+     * que de faire perdre l'entrée entière. */
+    private static function journalLigne($_entree) {
+        return json_encode($_entree, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    /*
+     * Remplace un fichier de data/ d'un seul coup : fichier temporaire, puis
+     * rename(). Un processus tué au milieu laisse l'ancien fichier intact, et
+     * un lecteur voit l'ancien ou le nouveau, jamais un mélange. Le temporaire
+     * est dans le même dossier — seule condition sous laquelle rename() est
+     * atomique — et porte le PID : le cron et l'écouteur écrivent en parallèle.
+     */
+    private static function fichierRemplacer($_chemin, $_contenu) {
+        $dossier = dirname($_chemin);
         if (!is_dir($dossier) && !@mkdir($dossier, 0775, true) && !is_dir($dossier)) {
-            return $this->journalEchec($dossier);
+            return false;
         }
-        $json = json_encode(array_values($_entrees), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($json === false) {
-            return $this->journalEchec($dossier);
-        }
-        $temporaire = $chemin . '.' . getmypid() . '.tmp';
-        if (@file_put_contents($temporaire, $json) === false) {
+        $temporaire = $_chemin . '.' . getmypid() . '.tmp';
+        if (@file_put_contents($temporaire, $_contenu) !== strlen($_contenu)) {
             @unlink($temporaire);
-            return $this->journalEchec($dossier);
+            return false;
         }
-        if (!@rename($temporaire, $chemin)) {
+        /* Voir verrouFichier() : le cron et le déploiement n'ont pas le même
+         * compte. */
+        @chmod($temporaire, 0664);
+        if (!@rename($temporaire, $_chemin)) {
             @unlink($temporaire);
-            return $this->journalEchec($dossier);
+            return false;
         }
-        /* Le cron tourne en www-data, le déploiement se fait sous un autre
-         * compte : sans ce chmod, un journal écrit par l'un devient illisible
-         * pour l'autre et la page affiche un journal vide. */
-        @chmod($chemin, 0664);
+        return true;
+    }
+
+    /*
+     * Le fichier dépasse-t-il deux fois `journal_taille` entrées ?
+     *
+     * Compter les lignes demanderait de tout relire, ce qu'on évite justement.
+     * En deçà de 120 octets par entrée — moins qu'aucune entrée réelle — le
+     * fichier ne peut pas avoir doublé, et la réponse ne coûte rien. Au-delà,
+     * la longueur moyenne d'une ligne est mesurée sur les 32 premiers Ko.
+     */
+    private function journalDeborde($_octets) {
+        $plafond = 2 * self::journalTaille();
+        if ($_octets <= $plafond * 120) {
+            return false;
+        }
+        $debut = @file_get_contents($this->cheminJournal(), false, null, 0, 32768);
+        if (!is_string($debut)) {
+            return false;
+        }
+        $fin = strrpos($debut, "\n");
+        if ($fin === false) {
+            /* Pas une seule ligne complète en 32 Ko : retailler dira la vérité. */
+            return true;
+        }
+        $lignes = substr_count($debut, "\n");
+        return ($_octets / (($fin + 1) / $lignes)) > $plafond;
+    }
+
+    /*
+     * Les $_nombre dernières entrées lisibles, dans l'ordre du fichier (la plus
+     * ancienne d'abord), chacune avec sa ligne brute. Les lignes corrompues —
+     * tronquées par un processus tué, éditées à la main — sont sautées sans
+     * compter : elles ne prennent la place de personne.
+     */
+    private static function journalDernieres($_chemin, $_nombre) {
+        $contenu = @file_get_contents($_chemin);
+        if (!is_string($contenu) || $contenu === '') {
+            return array();
+        }
+        $lignes = explode("\n", $contenu);
+        unset($contenu);
+        $gardees = array();
+        for ($i = count($lignes) - 1; $i >= 0 && count($gardees) < $_nombre; $i--) {
+            $ligne = trim($lignes[$i]);
+            if ($ligne === '') {
+                continue;
+            }
+            $entree = json_decode($ligne, true);
+            if (!is_array($entree)) {
+                continue;
+            }
+            $gardees[] = array($ligne, $entree);
+        }
+        return array_reverse($gardees);
+    }
+
+    /* Ramène le fichier à `journal_taille` entrées. À appeler sous le verrou du
+     * journal : une ligne ajoutée pendant la réécriture serait perdue. Un
+     * fichier déjà à la bonne taille n'est pas réécrit. */
+    private function journalRetailler() {
+        $chemin = $this->cheminJournal();
+        if (!file_exists($chemin)) {
+            return true;
+        }
+        $gardees = self::journalDernieres($chemin, self::journalTaille());
+        $contenu = '';
+        foreach ($gardees as $paire) {
+            $contenu .= $paire[0] . "\n";
+        }
+        if ($contenu === @file_get_contents($chemin)) {
+            return true;
+        }
+        if (!self::fichierRemplacer($chemin, $contenu)) {
+            return $this->journalEchec(dirname($chemin));
+        }
+        return true;
+    }
+
+    /*
+     * Convertit une fois l'ancien journal (tableau JSON, le plus récent en
+     * tête) en JSON Lines. À appeler sous le verrou du journal.
+     *
+     * Rien n'est perdu : les anciennes entrées passent AVANT celles que le
+     * nouveau fichier aurait déjà reçues, et l'ancien fichier n'est effacé
+     * qu'une fois le nouveau écrit — un échec laisse tout en place pour la
+     * prochaine fois. Un ancien fichier illisible était déjà lu comme vide : il
+     * est mis de côté plutôt qu'effacé, et plus relu.
+     */
+    private function journalMigrer() {
+        $ancien = $this->cheminJournalAncien();
+        if (!file_exists($ancien)) {
+            return true;
+        }
+        $entrees = json_decode((string) @file_get_contents($ancien), true);
+        if (!is_array($entrees)) {
+            @rename($ancien, $ancien . '.illisible');
+            return false;
+        }
+        $contenu = '';
+        foreach (array_reverse(array_values($entrees)) as $entree) {
+            if (!is_array($entree)) {
+                continue;
+            }
+            $ligne = self::journalLigne($entree);
+            if ($ligne !== false) {
+                $contenu .= $ligne . "\n";
+            }
+        }
+        $chemin = $this->cheminJournal();
+        if (file_exists($chemin)) {
+            $existant = @file_get_contents($chemin);
+            if (!is_string($existant)) {
+                return false;
+            }
+            if ($existant !== '' && substr($existant, -1) !== "\n") {
+                $existant .= "\n";
+            }
+            $contenu .= $existant;
+        }
+        if (!self::fichierRemplacer($chemin, $contenu)) {
+            return $this->journalEchec(dirname($chemin));
+        }
+        @unlink($ancien);
+        /* Le verrou de l'ancien format : plus personne ne le prend. */
+        @unlink($ancien . '.lock');
         return true;
     }
 
@@ -3080,51 +3287,296 @@ class presencium extends eqLogic {
         return false;
     }
 
-    /* La plus récente en tête. Un fichier illisible — tronqué par un disque
+    /*
+     * La plus récente en tête. Un fichier illisible — tronqué par un disque
      * plein, édité à la main — rend un journal vide plutôt qu'une exception :
      * le journal est une commodité, il ne doit jamais empêcher d'ouvrir la
-     * page de l'équipement. */
+     * page de l'équipement.
+     *
+     * Seules les `journal_taille` dernières entrées comptent, filtre ou non,
+     * même si le fichier en garde davantage en attendant cronDaily() : la page
+     * voit exactement ce qu'elle voyait quand le fichier était tronqué à chaque
+     * écriture, avertissement « journal plein » compris.
+     */
     public function journalLire($_limite = 200, $_genre = '') {
         try {
+            if (file_exists($this->cheminJournalAncien())) {
+                $verrou = $this->journalVerrou();
+                try {
+                    $this->journalMigrer();
+                } finally {
+                    $this->journalLibererVerrou($verrou);
+                }
+            }
             $chemin = $this->cheminJournal();
             if (!file_exists($chemin)) {
                 return array();
             }
-            $entrees = json_decode(@file_get_contents($chemin), true);
-            if (!is_array($entrees)) {
-                return array();
-            }
-            if ($_genre !== '' && $_genre !== 'tout') {
-                $filtrees = array();
-                foreach ($entrees as $entree) {
-                    if (isset($entree['genre']) && $entree['genre'] === $_genre) {
-                        $filtrees[] = $entree;
-                    }
+            $entrees = array();
+            foreach (array_reverse(self::journalDernieres($chemin, self::journalTaille())) as $paire) {
+                $entree = $paire[1];
+                if ($_genre !== '' && $_genre !== 'tout'
+                    && (!isset($entree['genre']) || $entree['genre'] !== $_genre)) {
+                    continue;
                 }
-                $entrees = $filtrees;
+                $entrees[] = $entree;
             }
             $limite = max(1, min(self::JOURNAL_TAILLE_MAX, (int) $_limite));
-            return array_slice(array_values($entrees), 0, $limite);
+            return array_slice($entrees, 0, $limite);
         } catch (Throwable $e) {
             log::add(__CLASS__, 'debug', __('Journal illisible :', __FILE__) . ' ' . $e->getMessage());
             return array();
         }
     }
 
+    /* L'ancien format aussi : vider le journal, c'est ne rien en laisser. */
     public function journalVider() {
-        $chemin = $this->cheminJournal();
-        if (file_exists($chemin)) {
-            @unlink($chemin);
+        $verrou = $this->journalVerrou();
+        try {
+            $ancien = $this->cheminJournalAncien();
+            foreach (array($this->cheminJournal(), $ancien, $ancien . '.illisible', $ancien . '.lock') as $chemin) {
+                if (file_exists($chemin)) {
+                    @unlink($chemin);
+                }
+            }
+        } finally {
+            $this->journalLibererVerrou($verrou);
         }
         return true;
     }
 
+    /* La rétention quotidienne (cronDaily), sous le verrou du journal. */
     public function journalTronquer() {
-        $entrees = $this->journalLire(self::journalTaille());
-        if (count($entrees) === 0) {
+        $verrou = $this->journalVerrou();
+        try {
+            $this->journalMigrer();
+            return $this->journalRetailler();
+        } finally {
+            $this->journalLibererVerrou($verrou);
+        }
+    }
+
+    /* ======================================================== ÉTAT DU FOYER */
+
+    /*
+     * Ce qu'un foyer doit se rappeler d'un passage à l'autre pour décider
+     * juste : le dernier instantané (d'où naissent les fronts), l'épisode en
+     * cours (vide_depuis, occupee_depuis, premier arrivé, dernier parti), les
+     * attentes, les repos et les épisodes temporels déjà consommés.
+     *
+     * Tout cela vivait dans le cache de Jeedom, recopié sur disque de temps en
+     * temps seulement : une coupure perdait une attente ou en rejouait une
+     * déjà exécutée, et un cache vidé en pleine absence faisait repartir
+     * vide_depuis de zéro — donc rejouer, le délai écoulé, les règles que cette
+     * absence avait déjà déclenchées. Le fichier data/etat-<id>.json est
+     * réécrit à chaque CHANGEMENT, atomiquement, sous son propre verrou.
+     *
+     * Ordre de lecture : le secours en cache (qui n'existe que si le fichier
+     * n'a pas pu s'écrire, et est alors plus récent que lui), le fichier,
+     * puis les anciennes clés de cache — la migration, faite une fois. Sans
+     * rien de tout cela, l'instantané est absent et le foyer observe avant
+     * d'agir, comme au premier démarrage.
+     */
+    private function cheminEtat() {
+        return self::dossierDonnees() . '/etat-' . (int) $this->getId() . '.json';
+    }
+
+    private static function etatVide() {
+        return array('instantane' => null, 'foyer' => null,
+                     'attentes' => array(), 'repos' => array(), 'temporel' => array());
+    }
+
+    /* Toutes les sections présentes et du bon type, quoi qu'on ait relu. */
+    private static function etatNormaliser($_etat) {
+        $etat = self::etatVide();
+        if (!is_array($_etat)) {
+            return $etat;
+        }
+        foreach (array('instantane', 'foyer') as $section) {
+            if (isset($_etat[$section]) && is_array($_etat[$section])) {
+                $etat[$section] = $_etat[$section];
+            }
+        }
+        foreach (array('attentes', 'repos', 'temporel') as $section) {
+            if (isset($_etat[$section]) && is_array($_etat[$section])) {
+                $etat[$section] = $_etat[$section];
+            }
+        }
+        return $etat;
+    }
+
+    /* Rend array(état, provenance) : 'secours', 'fichier', 'ancien' ou 'vide'.
+     * Lu hors verrou : le fichier est remplacé par rename(), jamais réécrit en
+     * place. */
+    private function etatCharger() {
+        $id = (int) $this->getId();
+        $secours = cache::byKey(self::CACHE_ETAT . $id)->getValue(null);
+        if (is_array($secours)) {
+            return array(self::etatNormaliser($secours), 'secours');
+        }
+        $chemin = $this->cheminEtat();
+        if (file_exists($chemin)) {
+            $etat = json_decode((string) @file_get_contents($chemin), true);
+            if (is_array($etat)) {
+                return array(self::etatNormaliser($etat), 'fichier');
+            }
+            log::add(__CLASS__, 'debug', $this->getHumanName() . ' : ' . __('état illisible, le foyer observe avant d\'agir', __FILE__));
+            return array(self::etatVide(), 'vide');
+        }
+
+        $etat = self::etatVide();
+        $trouve = false;
+        $instantane = cache::byKey(self::CACHE_INSTANTANE . $id)->getValue(null);
+        if (is_array($instantane)) {
+            $etat['instantane'] = $instantane;
+            $trouve = true;
+        }
+        $foyer = cache::byKey(self::CACHE_FOYER . $id)->getValue(null);
+        if (is_array($foyer)) {
+            $etat['foyer'] = $foyer;
+            $trouve = true;
+        }
+        foreach ($this->regles() as $regle) {
+            $cles = array('attentes' => self::CACHE_ATTENTE, 'repos' => self::CACHE_REPOS, 'temporel' => self::CACHE_TEMPOREL);
+            foreach ($cles as $section => $prefixe) {
+                $valeur = cache::byKey($prefixe . $id . '::' . $regle['id'])->getValue(null);
+                if ($valeur !== null && $valeur !== '' && $valeur !== 0 && $valeur !== '0') {
+                    $etat[$section][$regle['id']] = $valeur;
+                    $trouve = true;
+                }
+            }
+        }
+        return array(self::etatNormaliser($etat), $trouve ? 'ancien' : 'vide');
+    }
+
+    /* Une section entière ($_cle null), ou l'une de ses entrées. */
+    private function etatValeur($_section, $_cle = null, $_defaut = null) {
+        list($etat) = $this->etatCharger();
+        $valeur = isset($etat[$_section]) ? $etat[$_section] : null;
+        if ($_cle === null) {
+            return ($valeur === null) ? $_defaut : $valeur;
+        }
+        return (is_array($valeur) && isset($valeur[$_cle])) ? $valeur[$_cle] : $_defaut;
+    }
+
+    /* Pose une section ($_cle null) ou une entrée ; null efface l'entrée. Une
+     * valeur inchangée ne coûte ni verrou ni écriture. */
+    private function etatPoser($_section, $_cle, $_valeur) {
+        list($etat, $source) = $this->etatCharger();
+        $actuelle = ($_cle === null) ? $etat[$_section]
+                  : (isset($etat[$_section][$_cle]) ? $etat[$_section][$_cle] : null);
+        if ($source === 'fichier' && $actuelle === $_valeur) {
             return true;
         }
-        return $this->journalEcrire($entrees);
+        return $this->etatModifier(function ($_etat) use ($_section, $_cle, $_valeur) {
+            if ($_cle === null) {
+                $_etat[$_section] = $_valeur;
+            } elseif ($_valeur === null) {
+                unset($_etat[$_section][$_cle]);
+            } else {
+                $_etat[$_section][$_cle] = $_valeur;
+            }
+            return $_etat;
+        });
+    }
+
+    /*
+     * Relit, transforme par $_fonction, réécrit — sous le verrou de l'état.
+     *
+     * Ce verrou-là ne peut être ni celui du foyer ni celui du journal : voir
+     * journalVerrou(). $_fonction ne doit donc rien faire qui le reprenne.
+     *
+     * Si le fichier ne s'écrit pas, l'état part en cache, où etatCharger() le
+     * lit en premier. Sans ce secours, un data/ en lecture seule ferait
+     * relire chaque minute le même instantané : chaque arrivée serait rejouée
+     * à chaque passage.
+     */
+    private function etatModifier($_fonction) {
+        $id = (int) $this->getId();
+        if ($id <= 0) {
+            return false;
+        }
+        $chemin = $this->cheminEtat();
+        $verrou = self::verrouFichier($chemin . '.lock');
+        try {
+            list($avant, $source) = $this->etatCharger();
+            $apres = self::etatNormaliser($_fonction($avant));
+            if ($source === 'fichier' && $apres === $avant) {
+                return true;
+            }
+            $json = json_encode($apres, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+            if ($json === false || !self::fichierRemplacer($chemin, $json)) {
+                cache::set(self::CACHE_ETAT . $id, $apres, self::CACHE_DUREE);
+                $cle = self::CACHE_ETAT . 'echec::' . $id;
+                if (cache::byKey($cle)->getValue('') === '') {
+                    cache::set($cle, '1', 3600);
+                    log::add(__CLASS__, 'error', $this->getHumanName() . ' : '
+                        . sprintf(__('état non enregistrable dans %s — vérifiez que le dossier appartient à www-data.', __FILE__), dirname($chemin)));
+                }
+                return false;
+            }
+            if ($source === 'secours') {
+                cache::delete(self::CACHE_ETAT . $id);
+            } elseif ($source === 'ancien') {
+                /* Migré : les anciennes clés, laissées là, seraient relues le
+                 * jour où le fichier disparaîtrait — avec un état périmé. */
+                $this->purgerCache();
+            }
+            return true;
+        } finally {
+            self::libererVerrou($verrou);
+        }
+    }
+
+    /* Suppression du foyer : son état part avec lui. */
+    private function etatVider() {
+        cache::delete(self::CACHE_ETAT . (int) $this->getId());
+        $chemin = $this->cheminEtat();
+        if (file_exists($chemin)) {
+            @unlink($chemin);
+        }
+    }
+
+    /* Les attentes, repos et épisodes des règles supprimées depuis : personne
+     * ne les relira plus. Appelé par cronDaily(). */
+    private function etatElaguer() {
+        if (!file_exists($this->cheminEtat())) {
+            return true;
+        }
+        $vivantes = array();
+        foreach ($this->regles() as $regle) {
+            $vivantes[(string) $regle['id']] = true;
+        }
+        return $this->etatModifier(function ($_etat) use ($vivantes) {
+            foreach (array('attentes', 'repos', 'temporel') as $section) {
+                foreach (array_keys($_etat[$section]) as $idRegle) {
+                    if (!isset($vivantes[(string) $idRegle])) {
+                        unset($_etat[$section][$idRegle]);
+                    }
+                }
+            }
+            return $_etat;
+        });
+    }
+
+    /* La conversion des fichiers et clés d'avant, faite d'avance par
+     * presencium_update() ; sans elle, elle se ferait au premier passage. */
+    public function migrerDonnees() {
+        $verrou = $this->journalVerrou();
+        try {
+            $this->journalMigrer();
+        } finally {
+            $this->journalLibererVerrou($verrou);
+        }
+        if ($this->type() === self::TYPE_FOYER) {
+            list(, $source) = $this->etatCharger();
+            if ($source === 'ancien') {
+                $this->etatModifier(function ($_etat) {
+                    return $_etat;
+                });
+            }
+        }
+        return true;
     }
 
     /* ============================================================== ANALYSE */
