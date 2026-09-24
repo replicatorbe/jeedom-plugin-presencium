@@ -72,6 +72,13 @@ function presencium_update() {
         } catch (Throwable $e) {
             log::add('presencium', 'error', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
         }
+        /* Journal en JSON Lines et état du foyer en fichier : conversion
+         * d'avance, sinon faite au premier passage. */
+        try {
+            $eqLogic->migrerDonnees();
+        } catch (Throwable $e) {
+            log::add('presencium', 'error', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
+        }
     }
 }
 
@@ -107,7 +114,8 @@ function presencium_remove() {
     }
 
     /*
-     * Les fichiers de data/ : les journaux, leurs verrous et ceux des foyers.
+     * Les fichiers de data/ : les journaux, les états de foyer, leurs verrous
+     * et ceux des foyers.
      *
      * preRemove() les efface équipement par équipement, mais il n'est appelé
      * que sur les équipements que le cœur supprime. Une désinstallation laisse
@@ -123,7 +131,7 @@ function presencium_remove() {
     try {
         $dossier = presencium::dossierDonnees();
         foreach (ls($dossier, '*', false, array('files', 'quiet')) as $fichier) {
-            if (!preg_match('/^(?:journal|foyer)-\d+\./', $fichier)) {
+            if (!preg_match('/^(?:journal|foyer|etat)-\d+\./', $fichier)) {
                 continue;
             }
             @unlink($dossier . '/' . $fichier);
