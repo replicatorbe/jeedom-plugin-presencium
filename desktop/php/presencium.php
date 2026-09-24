@@ -592,5 +592,13 @@ function presenciumVignette($_eqLogic, $_icone, $_actif, $_etat, $_detail, $_bad
 </div>
 
 <?php include_file('desktop', 'presencium', 'css', 'presencium'); ?>
-<?php include_file('core', 'plugin.template', 'js'); ?>
-<?php include_file('desktop', 'presencium', 'js', 'presencium'); ?>
+<?php
+/* L'ordre compte. plugin.template.js relit l'équipement dès son exécution et
+ * appelle printEqLogic à la réponse : presencium.js, qui la définit, passe
+ * donc en dernier, une fois le journal et les règles déjà chargés. La modale
+ * de règle n'embarque aucun script, elle emploie ceux-ci. */
+include_file('desktop', 'presencium.journal', 'js', 'presencium');
+include_file('desktop', 'presencium.regle', 'js', 'presencium');
+include_file('core', 'plugin.template', 'js');
+include_file('desktop', 'presencium', 'js', 'presencium');
+?>
