@@ -239,3 +239,69 @@ body[data-theme*="Dark"] .presenciumCarteEtat.presenciumPresent { color: #8fd18f
     outline: 2px solid #f0ad4e;
     outline-offset: 1px;
 }
+
+/* La panne de source, dite sous les badges du verdict. */
+#div_presenciumVerdict .presenciumVerdictDetail {
+    margin-top: 4px;
+    font-size: 12px;
+}
+
+/* ------------------------------------------------ Les habitants d'un foyer */
+
+/* Sélecteurs ancrés sur le conteneur : le thème pose marges et graisse sur
+   tout label et toute case à cocher, et une simple classe perdrait contre
+   input[type="checkbox"]. */
+#div_presenciumListePersonnes .presenciumPersonneLigne {
+    padding: 2px 0;
+}
+
+#div_presenciumListePersonnes .presenciumPersonneLigne > label {
+    font-weight: normal;
+    cursor: pointer;
+    margin: 0;
+}
+
+#div_presenciumListePersonnes input.presenciumPersonne {
+    margin-right: 8px;
+}
+
+/* ---------------------------------------------------- Une entrée du journal */
+
+/* Le liseré prend sa couleur du verdict, posée par le JS. L'entrée vit aussi
+   dans la fenêtre de règle (résultat de « Tester ») : d'où une classe, et non
+   un sélecteur sous #div_presenciumJournal. */
+.presenciumEntree {
+    padding: 6px 10px;
+    margin-bottom: 6px;
+    border-left: 4px solid #bbbbbb;
+    background: rgba(128, 128, 128, 0.06);
+}
+
+.presenciumEntree.presenciumEntreeRebond {
+    border-left-width: 6px;
+    background: rgba(240, 173, 78, 0.15);
+}
+
+.presenciumEntree.presenciumEntreeEssai {
+    border-left-style: dashed;
+}
+
+.presenciumEntree .presenciumEntreeEntete {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.presenciumEntree .presenciumEntreeDate {
+    font-family: monospace;
+    margin-right: 8px;
+}
+
+.presenciumEntree .presenciumEntreeTitre {
+    margin-top: 3px;
+}
+
+.presenciumEntree ul.presenciumEntreeListe {
+    margin: 4px 0 0 0;
+    padding-left: 18px;
+}
