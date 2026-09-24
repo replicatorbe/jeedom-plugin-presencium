@@ -824,6 +824,12 @@ class presencium extends eqLogic {
                 $cmd->setGeneric_type($definition['generic']);
                 $cmd->setOrder($order);
                 $cmd->save();
+            } elseif ($cmd->getType() != $definition['type'] || $cmd->getSubType() != $definition['subType']) {
+                /* Le type et le sous-type ne sont pas des préférences : le
+                 * moteur écrit et lit ces commandes en supposant les siens. */
+                $cmd->setType($definition['type']);
+                $cmd->setSubType($definition['subType']);
+                $cmd->save();
             }
             $order++;
         }
