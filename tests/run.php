@@ -690,6 +690,196 @@ verifie('occupée depuis',
         'Occupée depuis 5 min');
 verifie('déclencheur inconnu', presenciumRegles::libelleDeclencheur(array(), null), 'Déclencheur inconnu');
 
+/* ----------------------------------------------------------------- 13 ---
+ * Le retour du signal pendant un départ en cours. Avec un délai d'arrivée, le
+ * signal qui revient repart de zéro : sans la présence précédente, la personne
+ * serait absente le temps de ce délai — un faux départ, l'alarme armée sur
+ * quelqu'un qui n'a jamais quitté son salon. */
+echo "\nRetour pendant un départ en cours\n";
+$prudent = presenciumPersonne::normaliserReglages(array('delai_arrivee' => 60, 'delai_depart' => 15));
+$t0 = strtotime('2026-09-24 10:00:00');
+$retour = $t0 + 240;   /* quatre minutes de silence, puis le signal revient */
+$suite = array(
+    array('brut' => '0', 'debut' => $t0, 'fin' => $retour),
+    array('brut' => '1', 'debut' => $retour, 'fin' => $retour + 10),
+);
+$precedent = true;
+$transitionsRetour = array();
+foreach ($suite as $segment) {
+    for ($maintenant = $segment['debut']; $maintenant <= $segment['fin']; $maintenant += 10) {
+        $verdict = presenciumPersonne::evaluer($segment['brut'], $segment['debut'], $maintenant, $prudent, $precedent);
+        if ($precedent && !$verdict['present']) {
+            $transitionsRetour[] = 'depart@' . ($maintenant - $t0);
+        }
+        $precedent = $verdict['present'];
+    }
+}
+verifie('4 min de silence puis 10 s de signal : aucun départ', implode(' ', $transitionsRetour), '');
+verifie('au retour, présente et non « arrivée en cours »',
+        presenciumPersonne::evaluer('1', $retour, $retour + 5, $prudent, true)['raison'], 'presente');
+verifie('précédent inconnu : le délai d\'arrivée s\'applique',
+        presenciumPersonne::evaluer('1', $retour, $retour + 5, $prudent, null)['raison'], 'arrivee_en_cours');
+verifie('précédent absent : c\'est une vraie arrivée, le délai s\'applique',
+        presenciumPersonne::evaluer('1', $retour, $retour + 5, $prudent, false)['present'], false);
+verifie('le contre-essai : sans précédent, le faux départ a lieu',
+        presenciumPersonne::evaluer('1', $retour, $retour + 5, $prudent)['present'], false);
+
+/* ----------------------------------------------------------------- 14 ---
+ * La composition du foyer, portée par `membres`. Le total seul ne voit pas un
+ * échange à effectif constant, et il noyait les vrais fronts du même passage. */
+echo "\nComposition du foyer\n";
+function instantaneM($_presents, $_membres) {
+    $instantane = instantane($_presents, count($_membres));
+    $instantane['membres'] = $_membres;
+    return $instantane;
+}
+verifie('A présente retirée, B absente ajoutée : rien',
+        resume(presenciumRegles::transitions(instantaneM(array(1), array(1, 3)),
+                                             instantaneM(array(), array(2, 3)))), '');
+verifie('le même échange sans membres : l\'ancien repli se trompe',
+        resume(presenciumRegles::transitions(instantane(array(1), 2), instantane(array(), 2))),
+        'depart:1 depart_dernier:0');
+verifie('ajout d\'un membre présent : aucune arrivée',
+        resume(presenciumRegles::transitions(instantaneM(array(1), array(1)),
+                                             instantaneM(array(1, 2), array(1, 2)))), '');
+verifie('ajout d\'un membre présent à une maison vide : rien',
+        resume(presenciumRegles::transitions(instantaneM(array(), array(1)),
+                                             instantaneM(array(2), array(1, 2)))), '');
+verifie('vrai départ d\'un autre membre pendant un retrait : détecté',
+        resume(presenciumRegles::transitions(instantaneM(array(1, 2, 3), array(1, 2, 3)),
+                                             instantaneM(array(1), array(1, 2)))), 'depart:2');
+verifie('vraie arrivée d\'un autre membre pendant un ajout : détectée',
+        resume(presenciumRegles::transitions(instantaneM(array(1), array(1, 2)),
+                                             instantaneM(array(1, 2, 3), array(1, 2, 3)))),
+        'arrivee:2 arrivee_tous:0');
+verifie('dernier présent retiré : la maison ne « se vide » pas',
+        resume(presenciumRegles::transitions(instantaneM(array(1), array(1, 2)),
+                                             instantaneM(array(), array(2)))), '');
+verifie('départ réel et retrait d\'un présent : le foyer se vide',
+        resume(presenciumRegles::transitions(instantaneM(array(1, 2), array(1, 2)),
+                                             instantaneM(array(), array(1)))), 'depart:1 depart_dernier:0');
+/* La maison n'était pas vide : l'occupant qu'on retire y était encore. */
+verifie('arrivée pendant le retrait du seul présent : pas de premier arrivé',
+        resume(presenciumRegles::transitions(instantaneM(array(2), array(1, 2)),
+                                             instantaneM(array(1), array(1)))), 'arrivee:1 arrivee_tous:0');
+verifie('retirer le seul absent : pas de « tout le monde est là »',
+        resume(presenciumRegles::transitions(instantaneM(array(1), array(1, 2)),
+                                             instantaneM(array(1), array(1)))), '');
+verifie('membres en chaînes relus d\'un cache JSON',
+        resume(presenciumRegles::transitions(
+            array('presents' => array('1' => 'A'), 'total' => 2, 'membres' => array('1', '2')),
+            array('presents' => array(1 => 'A', 2 => 'B'), 'total' => 2, 'membres' => array(1, 2)))),
+        'arrivee:2 arrivee_tous:0');
+verifie('un seul instantané porte membres : l\'ancien repli',
+        resume(presenciumRegles::transitions(instantane(array(1), 1),
+                                             instantaneM(array(1, 2), array(1, 2)))), '');
+
+/* ----------------------------------------------------------------- 15 ---
+ * La valeur inconnue. Une commande jamais collectée n'est ni égale ni
+ * différente de quoi que ce soit : « porte != ouverte » ne doit pas autoriser
+ * une action sur un capteur muet. */
+echo "\nComparaison sur une valeur vide\n";
+verifie('inconnu != on est faux', presenciumRegles::comparer(null, '!=', 'on'), false);
+verifie('vide != on est faux', presenciumRegles::comparer('', '!=', 'on'), false);
+verifie('inconnu > 5 est faux', presenciumRegles::comparer(null, '>', '5'), false);
+verifie('inconnu < 5 est faux', presenciumRegles::comparer(null, '<', '5'), false);
+verifie('inconnu <= vide est faux', presenciumRegles::comparer(null, '<=', ''), false);
+verifie('inconnu != vide est faux', presenciumRegles::comparer(null, '!=', ''), false);
+verifieVrai('vide == vide', presenciumRegles::comparer('  ', '==', ''));
+verifieVrai('une valeur connue reste différente du vide', presenciumRegles::comparer('on', '!=', ''));
+
+/* ----------------------------------------------------------------- 16 ---
+ * Les autres façons de dire « présent », et les nombres qui valent 1. */
+echo "\nSignal brut : valeurs ajoutées\n";
+foreach (array('home', 'Home', 'detected', 'detecte', 'détecté', 'DÉTECTÉ', 'present', '1.0', 1.0) as $dit) {
+    verifieVrai('« ' . var_export($dit, true) . ' » vaut présent', presenciumPersonne::estPresentBrut($dit, '1'));
+}
+verifie('« 2 » ne vaut pas présent', presenciumPersonne::estPresentBrut('2', '1'), false);
+verifie('« 0.0 » ne vaut pas présent', presenciumPersonne::estPresentBrut('0.0', '1'), false);
+verifie('« not_home » ne vaut pas présent', presenciumPersonne::estPresentBrut('not_home', '1'), false);
+/* La limite documentée : une égalité, jamais un seuil. */
+verifie('RSSI -65 contre -70 : égalité seulement', presenciumPersonne::estPresentBrut('-65', '-70'), false);
+
+/* ----------------------------------------------------------------- 17 ---
+ * Les heures telles qu'on les tape, la plage d'un jour entier, et les deux
+ * nuits de changement d'heure, où la nuit dure sept ou neuf heures. */
+echo "\nHoraire : saisies et changements d'heure\n";
+function regleHoraire($_de, $_a) {
+    return presenciumRegles::normaliserRegle(array('declencheur' => 'depart_dernier',
+        'conditions' => array('heures' => array('actif' => 1, 'de' => $_de, 'a' => $_a))));
+}
+verifie('« 7:5 » vaut 07:05', regleHoraire('7:5', '8:00')['conditions']['heures']['de'], '07:05');
+verifie('« 7h05 » vaut 07:05', regleHoraire('7h05', '8:00')['conditions']['heures']['de'], '07:05');
+verifie('« 705 » vaut 07:05', regleHoraire('705', '8:00')['conditions']['heures']['de'], '07:05');
+verifie('« 7:60 » est rejeté', regleHoraire('7:60', '8:00')['conditions']['heures']['de'], '00:00');
+verifie('« 7:555 » est rejeté', regleHoraire('7:555', '8:00')['conditions']['heures']['de'], '00:00');
+$matin = regleHoraire('7:5', '7:10');
+verifieVrai('07:05 dans « 7:5 → 7:10 »', presenciumRegles::horaireOk($matin, strtotime('2026-09-21 07:05')));
+verifie('07:04 hors de « 7:5 → 7:10 »', presenciumRegles::horaireOk($matin, strtotime('2026-09-21 07:04')), false);
+$journee = regleHoraire('08:00', '08:00');
+verifieVrai('de == a : midi passe', presenciumRegles::horaireOk($journee, strtotime('2026-09-21 12:00')));
+verifieVrai('de == a : 03:00 passe', presenciumRegles::horaireOk($journee, strtotime('2026-09-21 03:00')));
+$journeeSemaine = presenciumRegles::normaliserRegle(array('declencheur' => 'depart_dernier',
+    'conditions' => array('heures' => array('actif' => 1, 'de' => '08:00', 'a' => '08:00'),
+                          'jours' => array(1))));
+verifieVrai('de == a, lundi coché : lundi 03:00 est lundi',
+            presenciumRegles::horaireOk($journeeSemaine, strtotime('2026-09-21 03:00')));
+
+/* 29 mars 2026 : 02:00 devient 03:00. 25 octobre 2026 : 03:00 redevient 02:00. */
+$nuitDst = regleHoraire('22:00', '06:00');
+$printemps = array('2026-03-28 22:00 +0100' => true, '2026-03-29 01:59 +0100' => true,
+                   '2026-03-29 03:00 +0200' => true, '2026-03-29 05:59 +0200' => true,
+                   '2026-03-29 06:01 +0200' => false, '2026-03-29 12:00 +0200' => false);
+foreach ($printemps as $quand => $attendu) {
+    verifie('printemps ' . $quand, presenciumRegles::horaireOk($nuitDst, strtotime($quand)), $attendu);
+}
+$automne = array('2026-10-24 22:00 +0200' => true, '2026-10-25 02:30 +0200' => true,
+                 '2026-10-25 02:30 +0100' => true, '2026-10-25 06:00 +0100' => true,
+                 '2026-10-25 06:01 +0100' => false, '2026-10-25 21:59 +0100' => false);
+foreach ($automne as $quand => $attendu) {
+    verifie('automne ' . $quand, presenciumRegles::horaireOk($nuitDst, strtotime($quand)), $attendu);
+}
+/* La nuit du samedi au dimanche reste celle du samedi, heure d'été ou pas. */
+$nuitSamedi = presenciumRegles::normaliserRegle(array('declencheur' => 'depart_dernier',
+    'conditions' => array('heures' => array('actif' => 1, 'de' => '22:00', 'a' => '06:00'),
+                          'jours' => array(6))));
+verifieVrai('printemps : dimanche 03:30 appartient au samedi',
+            presenciumRegles::horaireOk($nuitSamedi, strtotime('2026-03-29 03:30 +0200')));
+verifieVrai('automne : la seconde 02:30 appartient au samedi',
+            presenciumRegles::horaireOk($nuitSamedi, strtotime('2026-10-25 02:30 +0100')));
+
+/* ----------------------------------------------------------------- 18 ---
+ * L'annulation d'une attente : le déclencheur s'est-il inversé ? C'est ce qui
+ * fait que partir, revenir chercher ses clés et repartir n'arme rien. */
+echo "\nInversion d'un déclencheur\n";
+$vide = instantane(array(), 2);
+$un = instantane(array(1), 2);
+$complet = instantane(array(1, 2), 2);
+$cas = array(
+    array('arrivee_premier', 0, $vide, true),  array('arrivee_premier', 0, $un, false),
+    array('occupee_depuis', 0, $vide, true),   array('occupee_depuis', 0, $un, false),
+    array('depart_dernier', 0, $un, true),     array('depart_dernier', 0, $vide, false),
+    array('vide_depuis', 0, $un, true),        array('vide_depuis', 0, $vide, false),
+    array('arrivee_tous', 0, $un, true),       array('arrivee_tous', 0, $complet, false),
+    array('arrivee_tous', 0, instantane(array(), 0), true),
+    array('arrivee', 2, $un, true),            array('arrivee', 2, $complet, false),
+    array('arrivee', 0, $vide, true),          array('arrivee', 0, $un, false),
+    array('depart', 2, $complet, true),        array('depart', 2, $un, false),
+    array('depart', 0, $complet, true),        array('depart', 0, $un, false),
+    array('depart', 0, instantane(array(), 0), false),
+);
+foreach ($cas as $c) {
+    list($declencheur, $personne, $etat, $attendu) = $c;
+    verifie($declencheur . ($personne ? ' de ' . $personne : '') . ', présents '
+            . (implode(',', array_keys($etat['presents'])) ?: 'aucun') . '/' . $etat['total'],
+            presenciumRegles::declencheurInverse(array('declencheur' => $declencheur),
+                array('type' => $declencheur, 'personne' => $personne), $etat), $attendu);
+}
+verifie('instantané illisible : l\'attente continue',
+        presenciumRegles::declencheurInverse(array('declencheur' => 'depart_dernier'), array(), null), false);
+verifie('déclencheur inconnu : l\'attente continue',
+        presenciumRegles::declencheurInverse(array('declencheur' => 'x'), array(), $un), false);
+
 /* ---------------------------------------------------------------- BILAN --- */
 echo "\n";
 if ($ko == 0) {

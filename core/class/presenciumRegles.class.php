@@ -310,7 +310,10 @@ class presenciumRegles {
     /*
      * Compare deux instantanés et rend les déclencheurs franchis.
      *
-     * $_avant / $_apres = array('presents' => array(idEqLogic => nom), 'total' => int)
+     * $_avant / $_apres = array('presents' => array(idEqLogic => nom),
+     *                           'total' => int, 'membres' => array(id, …))
+     * `membres` (toutes les personnes du foyer) est facultatif : un instantané
+     * mémorisé par une version antérieure n'en a pas.
      * Rend une liste de array('type' => …, 'personne' => 0|id).
      *
      * L'ordre est stable et se lit comme la scène se déroule :
@@ -342,48 +345,63 @@ class presenciumRegles {
 
         $presentsAvant = self::identifiants($_avant['presents']);
         $presentsApres = self::identifiants($_apres['presents']);
-        $totalAvant = isset($_avant['total']) ? max(0, (int) $_avant['total']) : count($presentsAvant);
-        $totalApres = isset($_apres['total']) ? max(0, (int) $_apres['total']) : count($presentsApres);
+        $membresAvant = self::membres($_avant);
+        $membresApres = self::membres($_apres);
 
-        $arrivees = array_values(array_diff($presentsApres, $presentsAvant));
-        $departs = array_values(array_diff($presentsAvant, $presentsApres));
+        if ($membresAvant !== null && $membresApres !== null) {
+            /*
+             * Composition connue des deux côtés : seuls les membres présents
+             * dans LES DEUX instantanés peuvent arriver ou partir. Une personne
+             * ajoutée ou retirée n'a rien franchi — on vient de cocher ou de
+             * décocher sa case — et les vrais fronts des autres membres, dans
+             * le même passage, sortent quand même.
+             *
+             * Les présents sont bornés aux membres de leur instantané et les
+             * totaux relus sur la liste, pour que les trois restent cohérents.
+             */
+            $presentsAvant = array_values(array_intersect($presentsAvant, $membresAvant));
+            $presentsApres = array_values(array_intersect($presentsApres, $membresApres));
+            $communs = array_intersect($membresAvant, $membresApres);
+            $totalAvant = count($membresAvant);
+            $totalApres = count($membresApres);
+            $arrivees = array_values(array_intersect(array_diff($presentsApres, $presentsAvant), $communs));
+            $departs = array_values(array_intersect(array_diff($presentsAvant, $presentsApres), $communs));
+        } else {
+            $totalAvant = isset($_avant['total']) ? max(0, (int) $_avant['total']) : count($presentsAvant);
+            $totalApres = isset($_apres['total']) ? max(0, (int) $_apres['total']) : count($presentsApres);
+            $arrivees = array_values(array_diff($presentsApres, $presentsAvant));
+            $departs = array_values(array_diff($presentsAvant, $presentsApres));
+            /*
+             * Repli pour un instantané sans `membres` (version antérieure) : le
+             * total est alors la seule trace d'un changement de composition, et
+             * la garde est symétrique parce que les deux sens trompent pareil.
+             *
+             * Le total DIMINUE : une personne retirée disparaît comme si elle
+             * partait, et l'alarme s'armerait en pleine séance de réglage.
+             *
+             * Le total AUGMENTE : une personne ajoutée apparaît comme si elle
+             * arrivait, et « la maison n'est plus vide → désarmer » partirait
+             * sur une occupation qui n'a pas bougé.
+             *
+             * Le prix : un vrai front du même passage est perdu POUR DE BON — le
+             * passage suivant compare à cet instantané-ci, où il est déjà
+             * acquis — et un échange à effectif constant passe inaperçu. D'où
+             * `membres` ; ce repli ne sert qu'au passage qui suit la mise à jour.
+             */
+            if ($totalApres < $totalAvant) {
+                $departs = array();
+            }
+            if ($totalApres > $totalAvant) {
+                /* Vider les arrivées neutralise aussi `arrivee_premier` et
+                 * `arrivee_tous`, qui exigent une arrivée dans ce passage. */
+                $arrivees = array();
+            }
+        }
         sort($arrivees);
         sort($departs);
 
-        /*
-         * La composition du foyer a changé : ce passage ne déclenche rien du
-         * côté qui vient de bouger. Le total est la seule trace disponible d'un
-         * changement de composition, et la garde est symétrique parce que les
-         * deux sens produisent la même illusion.
-         *
-         * Le total DIMINUE : une personne retirée du foyer disparaît de
-         * l'instantané exactement comme si elle venait de partir. Elle n'est pas
-         * partie — on vient de décocher sa case — et déclencher là-dessus
-         * armerait l'alarme au beau milieu d'une séance de réglage, le pire
-         * moment puisque l'utilisateur a la page ouverte et les mains dans le
-         * plugin.
-         *
-         * Le total AUGMENTE : une personne ajoutée au foyer apparaît dans
-         * l'instantané exactement comme si elle venait d'arriver. Cocher une
-         * troisième personne déjà chez elle et enregistrer produirait sinon
-         * `arrivee`, et `arrivee_premier` ou `arrivee_tous` avec — donc une
-         * règle « la maison n'est plus vide → désarmer » qui part toute seule,
-         * pendant le réglage, sur une maison dont l'occupation n'a pas bougé
-         * d'un cheveu.
-         *
-         * Dans les deux cas, un vrai front survenu dans la même minute est
-         * perdu ; il sera vu au passage suivant, la maison ne bouge pas si vite.
-         */
-        if ($totalApres < $totalAvant) {
-            $departs = array();
-        }
-        if ($totalApres > $totalAvant) {
-            /* Vider les arrivées suffit à neutraliser `arrivee_premier` et
-             * `arrivee_tous` : l'un comme l'autre exigent une arrivée dans ce
-             * passage. */
-            $arrivees = array();
-        }
-
+        /* Sur les présents RÉELS d'avant : une maison où restait quelqu'un
+         * qu'on vient de retirer du foyer n'était pas vide. */
         if (count($presentsAvant) === 0 && count($arrivees) > 0) {
             $sortie[] = array('type' => 'arrivee_premier', 'personne' => 0);
         }
@@ -408,14 +426,29 @@ class presenciumRegles {
         foreach ($departs as $id) {
             $sortie[] = array('type' => 'depart', 'personne' => $id);
         }
-        /* La maison ne devient vide que si quelqu'un en est sorti : sans cette
-         * condition, un foyer vidé de ses personnes dans la configuration
-         * passerait pour une maison qui se vide. */
+        /* La maison ne devient vide que si quelqu'un en est sorti : un foyer
+         * vidé de ses personnes dans la configuration n'est pas une maison qui
+         * se vide. Un vrai départ qui, avec un retrait du même passage, laisse
+         * la maison vide la vide bien : le foyer tel qu'il est s'est vidé. */
         if (count($departs) > 0 && count($presentsApres) === 0) {
             $sortie[] = array('type' => 'depart_dernier', 'personne' => 0);
         }
 
         return $sortie;
+    }
+
+    /* Les membres d'un instantané, en entiers, ou null s'il n'en porte pas. */
+    private static function membres($_instantane) {
+        if (!isset($_instantane['membres']) || !is_array($_instantane['membres'])) {
+            return null;
+        }
+        $ids = array();
+        foreach ($_instantane['membres'] as $id) {
+            if (is_scalar($id) && is_numeric($id) && (int) $id > 0 && !in_array((int) $id, $ids, true)) {
+                $ids[] = (int) $id;
+            }
+        }
+        return $ids;
     }
 
     /* Un instantané exploitable, par opposition à « pas encore d'instantané ».
@@ -473,6 +506,46 @@ class presenciumRegles {
     }
 
     /*
+     * Le déclencheur d'une attente s'est-il inversé ?
+     *
+     * $_transition est celle mémorisée avec l'attente, $_instantane l'état
+     * courant du foyer. Une attente d'arrivée est annulée par un départ, et
+     * réciproquement : pour un déclencheur qui nomme quelqu'un, c'est l'état de
+     * cette personne qui compte ; pour les autres, celui du foyer.
+     *
+     * Une entrée illisible rend false : dans le doute, l'attente continue, et
+     * l'horaire et les conditions seront de toute façon relus au moment d'agir.
+     */
+    public static function declencheurInverse($_regle, $_transition, $_instantane) {
+        if (!is_array($_regle) || !isset($_regle['declencheur']) || !self::estInstantane($_instantane)) {
+            return false;
+        }
+        $presents = $_instantane['presents'];
+        $nombre = count($presents);
+        $total = isset($_instantane['total']) ? (int) $_instantane['total'] : 0;
+        $personne = (is_array($_transition) && isset($_transition['personne']) && (int) $_transition['personne'] > 0)
+                  ? (int) $_transition['personne'] : 0;
+
+        switch ((string) $_regle['declencheur']) {
+            case 'arrivee_premier':
+            case 'occupee_depuis':
+                return ($nombre === 0);
+            case 'depart_dernier':
+            case 'vide_depuis':
+                return ($nombre > 0);
+            case 'arrivee_tous':
+                return ($total <= 0 || $nombre < $total);
+            case 'arrivee':
+                return ($personne > 0) ? !isset($presents[$personne]) : ($nombre === 0);
+            case 'depart':
+                /* « Quelqu'un part » ne s'annule que quand tout le monde est
+                 * revenu : un autre départ ne le contredit pas. */
+                return ($personne > 0) ? isset($presents[$personne]) : ($nombre >= $total && $total > 0);
+        }
+        return false;
+    }
+
+    /*
      * Compare la valeur d'une commande à celle attendue par une condition.
      *
      * Ne lève jamais, quoi qu'on lui donne : elle est appelée en pleine
@@ -494,6 +567,12 @@ class presenciumRegles {
      * même passerelle publie « on » ou « ON » selon la version de son firmware.
      * Un opérateur inconnu rend false et non true : une règle corrompue ne doit
      * pas se croire satisfaite.
+     *
+     * Une valeur VIDE (commande jamais collectée, null) est inconnue : elle ne
+     * satisfait aucun opérateur, sauf `==` contre une valeur attendue vide.
+     * En particulier « inconnu != on » est faux — inconnu n'est pas différent,
+     * et une condition « porte != ouverte » ne doit pas autoriser une action
+     * sur un capteur muet.
      */
     public static function comparer($_valeur, $_operateur, $_attendu) {
         if (!is_string($_operateur) || !in_array($_operateur, self::OPERATEURS, true)) {
@@ -503,6 +582,9 @@ class presenciumRegles {
         $attendu = self::scalaire($_attendu);
         if ($valeur === null || $attendu === null) {
             return false;
+        }
+        if ($valeur === '') {
+            return ($_operateur === '==' && $attendu === '');
         }
 
         if (is_numeric($valeur) && is_numeric($attendu)) {
@@ -581,7 +663,11 @@ class presenciumRegles {
         if ($actif === 1) {
             $de = self::minutesDuJour(self::heure(isset($heures['de']) ? $heures['de'] : '', '00:00'));
             $a = self::minutesDuJour(self::heure(isset($heures['a']) ? $heures['a'] : '', '23:59'));
-            if ($de <= $a) {
+            if ($de === $a) {
+                /* Début et fin confondus : toute la journée, pas une minute.
+                 * Une plage d'une minute ne partirait presque jamais, sans que
+                 * rien ne dise pourquoi. */
+            } elseif ($de < $a) {
                 if ($minute < $de || $minute > $a) {
                     return false;
                 }
@@ -672,16 +758,18 @@ class presenciumRegles {
     }
 
     /* « 7:5 », « 07h05 », « 0705 » — ce qu'un humain tape pour une heure,
-     * ramené à HH:MM, ou le défaut si ce n'en est pas une. Contrairement à un
+     * ramené à HH:MM, ou le défaut si ce n'en est pas une. Avec séparateur,
+     * les minutes ont un ou deux chiffres (« 7:5 » = 07:05) ; sans, deux
+     * exactement (« 705 » = 07:05). Contrairement à un
      * garde-fou facultatif, une borne d'horaire vide ne doit pas rester vide :
      * elle serait lue comme minuit et fermerait la plage. */
     private static function heure($_valeur, $_defaut) {
         $valeur = is_array($_valeur) ? '' : trim((string) $_valeur);
-        if ($valeur === '' || !preg_match('/^(\d{1,2})[:hH.]?(\d{2})$/', $valeur, $morceaux)) {
+        if ($valeur === '' || !preg_match('/^(\d{1,2})(?:[:hH.](\d{1,2})|(\d{2}))$/', $valeur, $morceaux)) {
             return $_defaut;
         }
         $heures = (int) $morceaux[1];
-        $minutes = (int) $morceaux[2];
+        $minutes = (int) ((isset($morceaux[2]) && $morceaux[2] !== '') ? $morceaux[2] : $morceaux[3]);
         if ($heures > 23 || $minutes > 59) {
             return $_defaut;
         }

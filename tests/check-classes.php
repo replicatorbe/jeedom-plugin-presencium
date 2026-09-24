@@ -1,38 +1,100 @@
 <?php
 /* Contrôles par réflexion contre le coeur de Jeedom installé.
  *
- *   php tests/check-classes.php
+ *   php tests/check-classes.php              # tout, Jeedom requis
+ *   php tests/check-classes.php --statique   # la lecture seule, sans Jeedom
  *
  * Ces pièges ont ceci de commun qu'ils sont invisibles à la relecture,
  * invisibles à « php -l », et invisibles au jeu d'essai hors ligne : ils ne se
  * manifestent que dans un vrai Jeedom, et leur symptôme ne ressemble pas à leur
- * cause. Tous se vérifient en quelques lignes de réflexion. */
+ * cause. Tous se vérifient en quelques lignes de réflexion.
+ *
+ * Une partie se lit pourtant dans le texte seul (1, 2, 4, 5, 6, 8, 9, 10) : le
+ * mode --statique ne fait qu'elle, pour tourner là où Jeedom n'est pas — une
+ * intégration continue, un poste de développement. Il échoue s'il n'a rien pu
+ * contrôler : un contrôle qui ne trouve rien à lire ne prouve rien.
+ *
+ * Toutes les classes de core/class/*.class.php sont lues, et chacune selon ce
+ * qu'elle est : les pièges de DB::save() et d'utils::a2o() ne concernent que
+ * les classes eqLogic et cmd — et les traits, qui finissent dedans. */
 
-$core = '/var/www/html/core/php/core.inc.php';
-if (!is_readable($core)) {
-    echo "Jeedom introuvable : contrôle ignoré.\n";
-    exit(0);
+$statique = in_array('--statique', array_slice(isset($argv) ? $argv : array(), 1), true);
+
+if (!$statique) {
+    $core = '/var/www/html/core/php/core.inc.php';
+    if (!is_readable($core)) {
+        echo "Jeedom introuvable : contrôle ignoré (php tests/check-classes.php --statique pour la lecture seule).\n";
+        exit(0);
+    }
+    require_once $core;
 }
-require_once $core;
 
-$file = __DIR__ . '/../core/class/presencium.class.php';
-if (!is_readable($file)) {
-    echo "Contrôles du coeur : core/class/presencium.class.php introuvable.\n";
+$titre = $statique ? 'Contrôles statiques' : 'Contrôles du coeur';
+$racine = __DIR__ . '/..';
+$problems = array();
+$controles = 0;
+
+/* ------------------------------------------------------------------ 0 ---
+ * Les sources, découpées classe par classe.
+ *
+ * Chaque morceau porte sa nature : `eqLogic` ou `cmd` s'il en hérite (même par
+ * une classe intermédiaire du plugin), `trait` pour un trait, `autre` sinon. */
+$fichiers = glob($racine . '/core/class/*.class.php');
+if (!is_array($fichiers) || count($fichiers) === 0) {
+    echo $titre . " : aucune classe trouvée dans core/class — rien n'a pu être contrôlé.\n";
     exit(1);
 }
-$source = file_get_contents($file);
-$problems = array();
+$sources = array();
+$morceaux = array();
+$parents = array();
+foreach ($fichiers as $chemin) {
+    $nom = 'core/class/' . basename($chemin);
+    $source = file_get_contents($chemin);
+    $sources[$nom] = $source;
+    preg_match_all('/^[ \t]*(?:(?:abstract|final)\s+)*(class|trait)\s+(\w+)(?:\s+extends\s+\\\\?(\w+))?/m',
+                   $source, $m, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
+    foreach ($m as $rang => $declaration) {
+        $debut = $declaration[0][1];
+        $fin = isset($m[$rang + 1]) ? $m[$rang + 1][0][1] : strlen($source);
+        $classe = $declaration[2][0];
+        $parent = (isset($declaration[3]) && $declaration[3][1] >= 0) ? $declaration[3][0] : '';
+        $parents[$classe] = $parent;
+        $morceaux[] = array('fichier' => $nom, 'classe' => $classe, 'trait' => ($declaration[1][0] === 'trait'),
+                            'texte' => substr($source, $debut, $fin - $debut));
+    }
+}
+/* La nature, en remontant les parents déclarés dans le plugin. */
+function natureDe($_classe, $_parents) {
+    $vus = array();
+    while (isset($_parents[$_classe]) && !isset($vus[$_classe])) {
+        $vus[$_classe] = true;
+        $_classe = $_parents[$_classe];
+        if ($_classe === 'eqLogic' || $_classe === 'cmd') {
+            return $_classe;
+        }
+    }
+    return 'autre';
+}
+foreach ($morceaux as $i => $morceau) {
+    $morceaux[$i]['nature'] = $morceau['trait'] ? 'trait' : natureDe($morceau['classe'], $parents);
+}
+$duCoeur = array_filter($morceaux, function ($_m) { return $_m['nature'] !== 'autre'; });
 
 /* ------------------------------------------------------------------ 1 ---
  * Toute propriété d'une classe eqLogic ou cmd doit commencer par un souligné.
  * DB::save() traite les autres comme des colonnes de la table : une propriété
  * « $refreshError » fait échouer la création d'un équipement sur « Unknown
- * column », sans que le journal du plugin en dise un mot. */
-preg_match_all('/^\s*(?:private|protected|public)\s+(?!static|function)\$(\w+)/m', $source, $m);
-foreach ($m[1] as $name) {
-    if (strpos($name, '_') !== 0) {
-        $problems[] = 'Propriété sans souligné initial : $' . $name
-            . ' — DB::save() la prendra pour une colonne de la table.';
+ * column », sans que le journal du plugin en dise un mot. Les propriétés
+ * statiques n'en sont pas, un type déclaré ne change rien. */
+foreach ($duCoeur as $morceau) {
+    $controles++;
+    preg_match_all('/^\s*(?:private|protected|public|var)\s+(?:readonly\s+)?(?!static\b|function\b|const\b)'
+                   . '(?:\??[\w\\\\|]+\s+)?\$(\w+)/m', $morceau['texte'], $m);
+    foreach ($m[1] as $name) {
+        if (strpos($name, '_') !== 0) {
+            $problems[] = $morceau['classe'] . ' : propriété sans souligné initial : $' . $name
+                . ' — DB::save() la prendra pour une colonne de la table.';
+        }
     }
 }
 
@@ -46,10 +108,13 @@ $forbidden = array('setId', 'setName', 'setLogicalId', 'setGeneric_type', 'setOb
                    'setEqType_name', 'setIsVisible', 'setIsEnable', 'setConfiguration',
                    'setTimeout', 'setCategory', 'setDisplay', 'setOrder', 'setComment',
                    'setTags', 'setCmd');
-foreach ($forbidden as $name) {
-    if (preg_match('/function\s+' . $name . '\s*\(/i', $source)) {
-        $problems[] = 'Méthode interdite : ' . $name . '() — utils::a2o() l\'appellera à '
-            . 'chaque enregistrement et tuera la sauvegarde.';
+foreach ($duCoeur as $morceau) {
+    $controles++;
+    foreach ($forbidden as $name) {
+        if (preg_match('/function\s+' . $name . '\s*\(/i', $morceau['texte'])) {
+            $problems[] = $morceau['classe'] . ' : méthode interdite : ' . $name . '() — utils::a2o() '
+                . 'l\'appellera à chaque enregistrement et tuera la sauvegarde.';
+        }
     }
 }
 
@@ -58,24 +123,32 @@ foreach ($forbidden as $name) {
  * exposent publiquement getCache(), setCache(), getStatus(), setStatus() et bien
  * d'autres : les redéclarer en privé est une erreur fatale AU CHARGEMENT de la
  * classe. Or le coeur charge la classe de chaque plugin actif sur chaque page —
- * toute l'interface de Jeedom tombe alors en HTTP 500, pas seulement le plugin. */
-preg_match_all('/^\s*(private|protected|public)\s+(?:static\s+)?function\s+(\w+)/m', $source, $m, PREG_SET_ORDER);
-$rank = array('private' => 0, 'protected' => 1, 'public' => 2);
-foreach (array('eqLogic', 'cmd') as $parent) {
-    $ref = new ReflectionClass($parent);
-    foreach ($m as $declaration) {
-        $visibility = $declaration[1];
-        $name = $declaration[2];
-        if (!$ref->hasMethod($name)) {
-            continue;
-        }
-        $inherited = $ref->getMethod($name);
-        $parentVisibility = $inherited->isPrivate() ? 'private'
-            : ($inherited->isProtected() ? 'protected' : 'public');
-        if ($rank[$visibility] < $rank[$parentVisibility]) {
-            $problems[] = 'Visibilité réduite sur une méthode héritée : ' . $name . '() est '
-                . $visibility . ' ici et ' . $parentVisibility . ' dans ' . $parent
-                . ' — erreur fatale au chargement, Jeedom entier en HTTP 500.';
+ * toute l'interface de Jeedom tombe alors en HTTP 500, pas seulement le plugin.
+ * Réflexion sur le coeur : hors mode statique seulement. */
+if (!$statique) {
+    $rank = array('private' => 0, 'protected' => 1, 'public' => 2);
+    foreach ($duCoeur as $morceau) {
+        $controles++;
+        preg_match_all('/^\s*(private|protected|public)\s+(?:static\s+)?function\s+(\w+)/m',
+                       $morceau['texte'], $m, PREG_SET_ORDER);
+        $cibles = ($morceau['nature'] === 'trait') ? array('eqLogic', 'cmd') : array($morceau['nature']);
+        foreach ($cibles as $parent) {
+            $ref = new ReflectionClass($parent);
+            foreach ($m as $declaration) {
+                $visibility = $declaration[1];
+                $name = $declaration[2];
+                if (!$ref->hasMethod($name)) {
+                    continue;
+                }
+                $inherited = $ref->getMethod($name);
+                $parentVisibility = $inherited->isPrivate() ? 'private'
+                    : ($inherited->isProtected() ? 'protected' : 'public');
+                if ($rank[$visibility] < $rank[$parentVisibility]) {
+                    $problems[] = $morceau['classe'] . ' : visibilité réduite sur une méthode héritée : '
+                        . $name . '() est ' . $visibility . ' ici et ' . $parentVisibility . ' dans ' . $parent
+                        . ' — erreur fatale au chargement, Jeedom entier en HTTP 500.';
+                }
+            }
         }
     }
 }
@@ -83,7 +156,14 @@ foreach (array('eqLogic', 'cmd') as $parent) {
 /* ------------------------------------------------------------------ 4 ---
  * La classe de commande est obligatoire, même vide : core/ajax/eqLogic.ajax.php
  * refuse de créer ou d'ouvrir un équipement si elle manque. */
-if (!preg_match('/class\s+presenciumCmd\s+extends\s+cmd/', $source)) {
+$controles++;
+$cmdTrouvee = false;
+foreach ($morceaux as $morceau) {
+    if ($morceau['classe'] === 'presenciumCmd' && $morceau['nature'] === 'cmd') {
+        $cmdTrouvee = true;
+    }
+}
+if (!$cmdTrouvee) {
     $problems[] = 'Classe presenciumCmd absente — impossible de créer un équipement.';
 }
 
@@ -103,14 +183,23 @@ $staticHooks = array('health', 'cron', 'cron5', 'cron10', 'cron15', 'cron30',
                      'deamon_stop', 'deamon_changeAutoMode', 'dependancy_info',
                      'dependancy_install', 'templateWidget', 'pull', 'onSource',
                      'sourcesCandidates');
-foreach ($staticHooks as $hook) {
-    if (preg_match('/^\s*(private|protected|public)(\s+static)?\s+function\s+' . $hook . '\s*\(/mi', $source, $m)) {
-        if (!isset($m[2]) || trim($m[2]) === '') {
-            $problems[] = 'Point d\'entrée non statique : ' . $hook . '() — le coeur l\'appelle sur la classe, '
-                . 'l\'Error qui en résulte n\'est pas rattrapée et emporte la page qui l\'invoque.';
-        }
-        if (isset($m[1]) && $m[1] !== 'public') {
-            $problems[] = 'Point d\'entrée non public : ' . $hook . '() — le coeur ne pourra pas l\'appeler.';
+foreach ($duCoeur as $morceau) {
+    if ($morceau['nature'] === 'cmd') {
+        continue;
+    }
+    $controles++;
+    foreach ($staticHooks as $hook) {
+        if (preg_match('/^\s*(private|protected|public)(\s+static)?\s+function\s+' . $hook . '\s*\(/mi',
+                       $morceau['texte'], $m)) {
+            if (!isset($m[2]) || trim($m[2]) === '') {
+                $problems[] = $morceau['classe'] . ' : point d\'entrée non statique : ' . $hook
+                    . '() — le coeur l\'appelle sur la classe, l\'Error qui en résulte n\'est pas '
+                    . 'rattrapée et emporte la page qui l\'invoque.';
+            }
+            if (isset($m[1]) && $m[1] !== 'public') {
+                $problems[] = $morceau['classe'] . ' : point d\'entrée non public : ' . $hook
+                    . '() — le coeur ne pourra pas l\'appeler.';
+            }
         }
     }
 }
@@ -120,16 +209,19 @@ foreach ($staticHooks as $hook) {
  * caractères que cleanComponanteName() (core/php/utils.inc.php) RETIRE
  * silencieusement : « Niveau d'aspiration » devient « Niveau daspiration » sur
  * le tableau de bord, et rien n'en avertit. */
-preg_match_all('/\x27name\x27\s*=>\s*__\(\x27((?:[^\x27\\\\]|\\\\.)*)\x27/', $source, $m);
 $interdits = array("\\'" => "'", '&' => '&', '#' => '#', ']' => ']', '[' => '[',
                    '%' => '%', '/' => '/', '"' => '"', '*' => '*');
-foreach (array_unique($m[1]) as $label) {
-    foreach ($interdits as $motif => $caractere) {
-        if (strpos($label, $motif) !== false) {
-            $problems[] = 'Nom de commande contenant « ' . $caractere . ' » : '
-                . str_replace("\\'", "'", $label)
-                . ' — cmd::setName() le retirera sans prévenir.';
-            break;
+foreach ($sources as $nom => $source) {
+    $controles++;
+    preg_match_all('/\x27name\x27\s*=>\s*__\(\x27((?:[^\x27\\\\]|\\\\.)*)\x27/', $source, $m);
+    foreach (array_unique($m[1]) as $label) {
+        foreach ($interdits as $motif => $caractere) {
+            if (strpos($label, $motif) !== false) {
+                $problems[] = $nom . ' : nom de commande contenant « ' . $caractere . ' » : '
+                    . str_replace("\\'", "'", $label)
+                    . ' — cmd::setName() le retirera sans prévenir.';
+                break;
+            }
         }
     }
 }
@@ -140,12 +232,17 @@ foreach (array_unique($m[1]) as $label) {
  * devient invisible pour tout ce qui range les équipements par type générique —
  * les assistants vocaux, les widgets, la vue Maison. Le plugin paraît alors
  * fonctionner, et la présence n'apparaît nulle part ailleurs. */
-$generics = jeedom::getConfiguration('cmd::generic_type');
-preg_match_all('/\x27generic\x27\s*=>\s*\x27([A-Z_]+)\x27/', $source, $m);
-foreach (array_unique($m[1]) as $generic) {
-    if ($generic !== '' && !isset($generics[$generic])) {
-        $problems[] = 'Type générique inconnu du coeur : ' . $generic . ' — la commande sera ignorée '
-            . 'par tout ce qui range les équipements par type générique.';
+if (!$statique) {
+    $generics = jeedom::getConfiguration('cmd::generic_type');
+    foreach ($sources as $nom => $source) {
+        $controles++;
+        preg_match_all('/\x27generic\x27\s*=>\s*\x27([A-Z_]+)\x27/', $source, $m);
+        foreach (array_unique($m[1]) as $generic) {
+            if ($generic !== '' && !isset($generics[$generic])) {
+                $problems[] = $nom . ' : type générique inconnu du coeur : ' . $generic
+                    . ' — la commande sera ignorée par tout ce qui range les équipements par type générique.';
+            }
+        }
     }
 }
 
@@ -163,7 +260,7 @@ foreach (array_unique($m[1]) as $generic) {
  *
  * À l'inverse, plugin_info doit rester fermé SAUF aux images, sinon l'icône du
  * plugin est refusée et le menu de Jeedom affiche une image cassée. */
-$racine = __DIR__ . '/..';
+$controles++;
 foreach (array('core/ajax', 'desktop', 'desktop/php', 'desktop/js', 'desktop/modal') as $dossier) {
     if (file_exists($racine . '/' . $dossier . '/.htaccess')) {
         $problems[] = 'Dossier servi au navigateur protégé par un .htaccess : ' . $dossier
@@ -183,42 +280,76 @@ if (file_exists($icone)) {
  * Les classes auxiliaires ne sont pas connues de l'autoload du coeur.
  *
  * jeedom::autoload() ne sait charger que la classe qui porte le nom du plugin
- * (core/php/core.inc.php) : presenciumPersonne et presenciumRegles n'existent
- * que parce que presencium.class.php les require. Un fichier servi au
- * navigateur — page, modale, ajax, page de configuration — qui nomme l'une des
- * deux avant d'avoir touché à presencium meurt donc sur « Class not found ».
+ * (core/php/core.inc.php) : toutes les autres — celles des autres fichiers de
+ * core/class — n'existent que parce que presencium.class.php les require. Un
+ * fichier servi au navigateur — page, modale, ajax, page de configuration —
+ * qui en nomme une avant d'avoir touché à presencium meurt donc sur « Class
+ * not found ».
  *
  * Et le symptôme ne désigne pas la cause : la page reste vide, le journal du
  * plugin ne dit rien, tout est dans /var/www/html/log/http.error. C'est arrivé
  * sur la page de configuration d'un plugin frère, à sa première ouverture. */
-$servis = array('plugin_info/configuration.php', 'plugin_info/install.php',
-                'core/ajax/presencium.ajax.php', 'desktop/php/presencium.php',
-                'desktop/modal/regle.editor.php');
-foreach ($servis as $fichier) {
-    $chemin = $racine . '/' . $fichier;
-    if (!file_exists($chemin)) {
-        continue;
+$auxiliaires = array();
+foreach ($morceaux as $morceau) {
+    if ($morceau['fichier'] !== 'core/class/presencium.class.php' && !$morceau['trait']) {
+        $auxiliaires[] = $morceau['classe'];
     }
-    $contenu = file_get_contents($chemin);
-    if (!preg_match('/presencium(Personne|Regles)::/', $contenu)) {
-        continue;
+}
+if (count($auxiliaires) > 0) {
+    $motifAux = '/\b(' . implode('|', array_map('preg_quote', $auxiliaires)) . ')::/';
+    $motifPremier = '/\b(presencium|' . implode('|', array_map('preg_quote', $auxiliaires)) . ')::/';
+    $servis = array_merge(glob($racine . '/plugin_info/*.php') ?: array(),
+                          glob($racine . '/core/ajax/*.php') ?: array(),
+                          glob($racine . '/desktop/php/*.php') ?: array(),
+                          glob($racine . '/desktop/modal/*.php') ?: array());
+    foreach ($servis as $chemin) {
+        $controles++;
+        $fichier = substr($chemin, strlen($racine) + 1);
+        $contenu = file_get_contents($chemin);
+        if (!preg_match($motifAux, $contenu)) {
+            continue;
+        }
+        /* Soit le fichier charge la classe principale lui-même, soit il a nommé
+         * presencium avant, ce qui déclenche l'autoload et amène les autres. */
+        if (preg_match('/require_once[^;]*presencium\.class\.php/', $contenu)) {
+            continue;
+        }
+        preg_match($motifPremier, $contenu, $premier);
+        if (!isset($premier[1]) || $premier[1] === 'presencium') {
+            continue;
+        }
+        $problems[] = 'Classe auxiliaire nommée sans chargement : ' . $fichier
+            . ' appelle ' . $premier[1] . ':: sans require_once de la classe principale '
+            . '— l\'autoload du coeur ne la connaît pas, la page meurt sur « Class not found ».';
     }
-    /* Soit le fichier charge la classe principale lui-même, soit il a nommé
-     * presencium avant, ce qui déclenche l'autoload et amène les deux autres
-     * avec lui. */
-    if (preg_match('/require_once[^;]*presencium\.class\.php/', $contenu)) {
-        continue;
-    }
-    preg_match('/presencium(Personne|Regles)?::/', $contenu, $premier);
-    if (!isset($premier[1]) || $premier[1] === '') {
-        continue;
-    }
-    $problems[] = 'Classe auxiliaire nommée sans chargement : ' . $fichier
-        . ' appelle presencium' . $premier[1] . ':: sans require_once de la classe principale '
-        . '— l\'autoload du coeur ne la connaît pas, la page meurt sur « Class not found ».';
 }
 
 /* ----------------------------------------------------------------- 10 ---
+ * Chaque fichier de core/class doit être chargé par un autre.
+ *
+ * Même raison que le 9, vue de l'autre côté : un fichier ajouté au découpage
+ * sans son require_once n'est jamais lu, et la première méthode qui y vit
+ * meurt sur « Class not found » — dans un cron, là où personne ne regarde. */
+foreach (array_keys($sources) as $nom) {
+    if ($nom === 'core/class/presencium.class.php') {
+        continue;
+    }
+    $controles++;
+    $motif = '/require(?:_once)?[^;]*[\/\x27"]' . preg_quote(basename($nom), '/') . '/';
+    $charge = false;
+    foreach ($sources as $autre => $source) {
+        if ($autre !== $nom && preg_match($motif, $source)) {
+            $charge = true;
+            break;
+        }
+    }
+    if (!$charge) {
+        $problems[] = $nom . ' n\'est chargé par aucune autre classe — l\'autoload du coeur ne le '
+            . 'trouvera pas, ses classes n\'existeront pas.';
+    }
+}
+
+/* ----------------------------------------------------------------- 11 ---
  * Le plugin porte lui-même l'alarme, avec les types génériques du coeur.
  *
  * Jeedom n'a plus d'alarme native depuis la v4 : jeeAlarm a disparu du coeur,
@@ -232,27 +363,38 @@ foreach ($servis as $fichier) {
  * retire ou renomme l'un de ces types, les commandes continueront d'être créées
  * sans erreur, et cesseront simplement d'être reconnues par le reste du
  * système. Rien, nulle part, ne le signalerait. */
-$requis = array(
-    'ALARM_ENABLE_STATE' => 'l\'état « alarme en service » du foyer',
-    'ALARM_STATE'        => 'l\'état « alarme armée » du foyer',
-    'ALARM_ARMED'        => 'l\'action « Armer »',
-    'ALARM_RELEASED'     => 'l\'action « Désarmer »',
-    'PRESENCE'           => 'la présence des personnes et du foyer',
-);
-foreach ($requis as $generic => $role) {
-    if (!isset($generics[$generic])) {
-        $problems[] = 'Type générique disparu du coeur : ' . $generic . ' — ' . $role
-            . ' ne sera plus reconnu par les assistants vocaux, les widgets ni la vue Maison, '
-            . 'sans la moindre erreur.';
+if (!$statique) {
+    $controles++;
+    $requis = array(
+        'ALARM_ENABLE_STATE' => 'l\'état « alarme en service » du foyer',
+        'ALARM_STATE'        => 'l\'état « alarme armée » du foyer',
+        'ALARM_ARMED'        => 'l\'action « Armer »',
+        'ALARM_RELEASED'     => 'l\'action « Désarmer »',
+        'PRESENCE'           => 'la présence des personnes et du foyer',
+    );
+    foreach ($requis as $generic => $role) {
+        if (!isset($generics[$generic])) {
+            $problems[] = 'Type générique disparu du coeur : ' . $generic . ' — ' . $role
+                . ' ne sera plus reconnu par les assistants vocaux, les widgets ni la vue Maison, '
+                . 'sans la moindre erreur.';
+        }
     }
 }
 
 /* ---------------------------------------------------------------- BILAN --- */
+/* Aucune classe eqLogic lue : les contrôles 1, 2 et 5 n'ont rien vu, et
+ * « aucun problème » ne voudrait rien dire. */
+if ($controles === 0 || count($duCoeur) === 0) {
+    echo $titre . " : rien n'a pu être contrôlé (" . count($fichiers) . " fichier(s), "
+        . count($duCoeur) . " classe(s) eqLogic/cmd).\n";
+    exit(1);
+}
 if (empty($problems)) {
-    echo "Contrôles du coeur : aucun problème.\n";
+    echo $titre . ' : aucun problème (' . $controles . ' contrôle(s), ' . count($fichiers)
+        . ' fichier(s), ' . count($morceaux) . " classe(s)).\n";
     exit(0);
 }
-echo "Contrôles du coeur : " . count($problems) . " problème(s)\n";
+echo $titre . " : " . count($problems) . " problème(s)\n";
 foreach ($problems as $problem) {
     echo '  - ' . $problem . "\n";
 }
