@@ -100,6 +100,47 @@ class presencium extends eqLogic {
      */
     private static $_profondeurFoyer = 0;
 
+    /* Posé par un processus qui trouve le verrou du foyer tenu : le détenteur
+     * refait alors une passe avant de relâcher (voir rafraichirFoyer()). */
+    const CACHE_REFAIRE = 'presencium::refaire::';
+    /* La suite d'actions d'une règle confiée à un processus séparé. */
+    const CACHE_SUITE = 'presencium::suite::';
+
+    /* Actions de scénario qui ne sont pas des commandes : relevées dans
+     * scenarioExpression::execute() du cœur. */
+    const MOTS_CLES_ACTION = array('icon', 'wait', 'sleep', 'stop', 'log', 'event', 'message',
+        'alert', 'popup', 'setColoredIcon', 'equipment', 'equipement', 'gotodesign', 'changeTheme',
+        'scenario', 'variable', 'genericType', 'delete_variable', 'ask', 'jeedom_poweroff',
+        'jeedom_reboot', 'scenario_return', 'remove_inat', 'exportHistory', 'report', 'tag');
+    /* Celles qui bloquent le processus : jamais dans le cron partagé. */
+    const ACTIONS_BLOQUANTES = array('wait', 'sleep', 'ask');
+    /* Celles qu'un essai ne joue pas : elles bloqueraient la page, ou
+     * arrêteraient la machine. */
+    const ACTIONS_HORS_ESSAI = array('wait', 'sleep', 'ask', 'jeedom_poweroff', 'jeedom_reboot');
+
+    /* Verdicts déjà calculés pendant ce passage, par « id@instant » : un
+     * passage de foyer en demandait 1 + F×M pour les mêmes personnes. Vidé à
+     * chaque passage du cron ou de l'écouteur, et à chaque changement de
+     * configuration d'une personne. */
+    private static $_memoVerdicts = array();
+    /* Personnes dont ce processus tient déjà le verrou : flock() ne se reprend
+     * pas dans un même processus. */
+    private static $_verrousPersonne = array();
+
+    /* Vide le mémo des verdicts, pour une personne ou pour toutes. */
+    public static function oublierVerdicts($_id = null) {
+        if ($_id === null) {
+            self::$_memoVerdicts = array();
+            return;
+        }
+        $prefixe = (int) $_id . '@';
+        foreach (array_keys(self::$_memoVerdicts) as $cle) {
+            if (strpos($cle, $prefixe) === 0) {
+                unset(self::$_memoVerdicts[$cle]);
+            }
+        }
+    }
+
     /* ==================================================================== CRON */
 
     /*
@@ -129,6 +170,7 @@ class presencium extends eqLogic {
      */
     public static function cron() {
         $maintenant = time();
+        self::oublierVerdicts();
         $equipements = self::byType(__CLASS__, true);
 
         foreach ($equipements as $eqLogic) {
@@ -281,6 +323,16 @@ class presencium extends eqLogic {
             '', 'presencium::simulation');
     }
 
+    /* Appelée par config::save() du cœur quand la case de simulation globale
+     * change : l'avertissement suit tout de suite, sans attendre cronDaily(). */
+    public static function postConfig_simulation($_value) {
+        try {
+            self::checkSimulation();
+        } catch (Throwable $e) {
+            log::add(__CLASS__, 'debug', $e->getMessage());
+        }
+    }
+
     /* ================================================================ LISTENER */
 
     /*
@@ -321,18 +373,13 @@ class presencium extends eqLogic {
             }
 
             $maintenant = time();
+            self::oublierVerdicts();
             $eqLogic->rafraichirPersonne($maintenant);
 
             /* Les foyers dans la foulée : c'est ce qui rend l'arrivée immédiate.
              * Sans cela, la présence de la personne serait juste tout de suite
              * mais les règles n'apprendraient l'arrivée qu'au prochain cron. */
-            foreach (self::foyersDe($id) as $foyer) {
-                try {
-                    $foyer->rafraichirFoyer($maintenant);
-                } catch (Throwable $e) {
-                    log::add(__CLASS__, 'error', $foyer->getHumanName() . ' : ' . $e->getMessage());
-                }
-            }
+            self::rafraichirFoyersDe($id, $maintenant);
         } catch (Throwable $e) {
             log::add(__CLASS__, 'error', __('Écouteur :', __FILE__) . ' ' . $e->getMessage());
         }
@@ -385,6 +432,18 @@ class presencium extends eqLogic {
         $listener = listener::byClassAndFunction(__CLASS__, 'onSource', array('id' => (int) $this->getId()));
         if (is_object($listener)) {
             $listener->remove();
+        }
+    }
+
+    /* Rafraîchit chaque foyer de cette personne ; un foyer en échec ne prive
+     * pas les suivants. */
+    public static function rafraichirFoyersDe($_idPersonne, $_maintenant) {
+        foreach (self::foyersDe((int) $_idPersonne) as $foyer) {
+            try {
+                $foyer->rafraichirFoyer($_maintenant);
+            } catch (Throwable $e) {
+                log::add(__CLASS__, 'error', $foyer->getHumanName() . ' : ' . $e->getMessage());
+            }
         }
     }
 
@@ -516,14 +575,20 @@ class presencium extends eqLogic {
                 continue;
             }
             foreach ($regle['actions'] as $rang => $action) {
-                $regles[$index]['actions'][$rang]['cmd_id'] = self::identifiantAction($action);
+                $regles[$index]['actions'][$rang] = self::resoudreAction($action);
             }
         }
         $this->setConfiguration('regles', $regles);
     }
 
     public function postSave() {
-        $this->createCommands();
+        /* Une commande qui refuse de s'enregistrer ne doit pas priver la
+         * personne de son écouteur. */
+        try {
+            $this->createCommands();
+        } catch (Throwable $e) {
+            log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . $e->getMessage());
+        }
 
         try {
             $this->syncListener();
@@ -536,10 +601,10 @@ class presencium extends eqLogic {
          * exactement à un plugin qui ne marche pas. */
         try {
             if ($this->type() === self::TYPE_PERSONNE) {
-                $this->rafraichirPersonne(time());
-                foreach (self::foyersDe((int) $this->getId()) as $foyer) {
-                    $foyer->rafraichirFoyer(time());
-                }
+                self::oublierVerdicts((int) $this->getId());
+                $maintenant = time();
+                $this->rafraichirPersonne($maintenant);
+                self::rafraichirFoyersDe((int) $this->getId(), $maintenant);
             } else {
                 $this->rafraichirFoyer(time());
             }
@@ -592,7 +657,8 @@ class presencium extends eqLogic {
      * pour les retrouver, faute de pouvoir interroger le cache par préfixe. */
     public function purgerCache() {
         $id = (int) $this->getId();
-        foreach (array(self::CACHE_PRESENCE, self::CACHE_INSTANTANE, self::CACHE_FOYER) as $prefixe) {
+        foreach (array(self::CACHE_PRESENCE, self::CACHE_INSTANTANE, self::CACHE_FOYER,
+                       self::CACHE_PREMIERE_VUE, self::CACHE_JOURNAL_ECHEC, self::CACHE_REFAIRE) as $prefixe) {
             cache::delete($prefixe . $id);
         }
         foreach ($this->regles() as $regle) {
@@ -726,10 +792,10 @@ class presencium extends eqLogic {
      * rejoue sur les équipements existants pour qu'une commande ajoutée par une
      * mise à jour n'apparaisse pas seulement sur les équipements créés après.
      *
-     * Le type, le sous-type et le type générique sont reposés à chaque
-     * enregistrement — ils déterminent le fonctionnement, et une commande mal
-     * typée ne s'exécute plus. Le nom et la visibilité, eux, appartiennent à
-     * l'utilisateur dès qu'ils existent.
+     * Tout est posé à la CRÉATION seulement : ordre, types, nom, visibilité.
+     * Une commande existante appartient à l'utilisateur, qui a pu la
+     * réordonner ou lui donner un autre type générique ; la réécrire à chaque
+     * enregistrement défaisait ces choix, et coûtait un save() par commande.
      */
     public function createCommands() {
         $definitions = ($this->type() === self::TYPE_FOYER)
@@ -752,12 +818,13 @@ class presencium extends eqLogic {
                 if (isset($definition['unite'])) {
                     $cmd->setUnite($definition['unite']);
                 }
+                $cmd->setType($definition['type']);
+                $cmd->setSubType($definition['subType']);
+                $cmd->setGeneric_type($definition['generic']);
+                $cmd->setOrder($order);
+                $cmd->save();
             }
-            $cmd->setType($definition['type']);
-            $cmd->setSubType($definition['subType']);
-            $cmd->setGeneric_type($definition['generic']);
-            $cmd->setOrder($order++);
-            $cmd->save();
+            $order++;
         }
 
         /*
@@ -898,15 +965,30 @@ class presencium extends eqLogic {
     /* ================================================================ PERSONNE */
 
     /*
-     * Le verdict, sans rien écrire.
+     * Le verdict, sans publier.
      *
-     * Aucune écriture ici, et c'est délibéré : la page, l'AJAX et health()
-     * l'appellent pour AFFICHER, et un affichage ne doit pas produire
-     * d'événement, d'historique ni de ligne de journal. rafraichirPersonne()
-     * est la seule à publier.
+     * Rien n'est publié ici — ni commande, ni historique, ni journal : la
+     * page, l'AJAX et health() l'appellent pour AFFICHER. rafraichirPersonne()
+     * est la seule à publier. Seule écriture : la « première vue » en cache
+     * (premiereVue()), quand la source ne porte aucune date.
+     *
+     * Mémorisé par passage : voir $_memoVerdicts.
      */
     public function verdictPersonne($_maintenant = null) {
         $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
+        $cleMemo = (int) $this->getId() . '@' . $maintenant;
+        if ((int) $this->getId() > 0 && isset(self::$_memoVerdicts[$cleMemo])) {
+            return self::$_memoVerdicts[$cleMemo];
+        }
+        $verdict = $this->calculerVerdict($maintenant);
+        if ((int) $this->getId() > 0) {
+            self::$_memoVerdicts[$cleMemo] = $verdict;
+        }
+        return $verdict;
+    }
+
+    private function calculerVerdict($_maintenant) {
+        $maintenant = (int) $_maintenant;
         $mode = self::modeValide($this->getConfiguration('mode', 'auto'));
         $reglages = presenciumPersonne::normaliserReglages($this->getConfiguration());
         if (!is_array($reglages)) {
@@ -917,94 +999,111 @@ class presencium extends eqLogic {
             'present' => false, 'brut' => false, 'transitoire' => false,
             'restant' => 0, 'raison' => 'absente',
         );
+        $verdict['mode'] = $mode;
+        $verdict['nom'] = $this->getName();
 
-        $source = cmd::byId((int) $this->getConfiguration('source', 0));
-        /* Une commande d'action est traitée comme absente. cmd::execCmd() ne
-         * rend une valeur que sur une commande d'information : sur une action,
-         * il l'EXÉCUTE. Lire la présence toutes les minutes appuierait alors
-         * sur un bouton toutes les minutes — et le ferait même en mode
-         * simulation, qui ne peut rien contre un chemin qu'il ne voit pas.
-         * L'interface filtre déjà sur les commandes d'information ; cette
-         * garde vise la configuration importée, restaurée ou éditée à la main. */
-        if (is_object($source) && $source->getType() !== 'info') {
-            $source = null;
-        }
-        if (!is_object($source)) {
-            /* Sans source, la personne est absente et le dit : inventer une
-             * présence serait pire, c'est ce qui empêche une alarme d'armer. */
+        /* Sans source configurée, la personne est absente et le dit : inventer
+         * une présence serait pire, c'est ce qui empêche une alarme d'armer. */
+        $idSource = (int) $this->getConfiguration('source', 0);
+        if ($idSource <= 0) {
             $verdict['source'] = false;
             $verdict['valeur'] = null;
             $verdict['signal_depuis'] = 0;
             $verdict['vu_depuis'] = 0;
-            $verdict['mode'] = $mode;
-            $verdict['nom'] = $this->getName();
             $verdict['libelle'] = __('Sans source', __FILE__);
             $verdict['depuis'] = 0;
             return $this->appliquerMode($verdict, $mode);
         }
 
-        $valeur = $source->execCmd();
-        /*
-         * getValueDate() est LA donnée qui rend le plugin juste sans mémoire :
-         * cmd::event() ne la met à jour que sur un changement réel de valeur
-         * (elle est recopiée telle quelle quand $repeat est vrai). C'est donc
-         * exactement l'instant où la balise a changé d'avis pour la dernière
-         * fois, quel que soit le nombre de répétitions depuis.
-         *
-         * Vide après un vidage de cache : on retombe sur « maintenant », donc
-         * sur une confirmation qui recommence. Conservateur dans le bon sens —
-         * une personne présente le reste pendant le délai de départ au lieu
-         * d'être déclarée partie par un cache effacé.
-         */
-        $date = $source->getValueDate();
-        $depuis = ($date === '' || $date === null) ? 0 : (int) strtotime($date);
-        if ($depuis <= 0 || $depuis > $maintenant) {
-            /*
-             * Pas de date exploitable. Retomber sur « maintenant » paraît
-             * prudent et ne l'est pas du tout : rien n'étant mémorisé, le
-             * recalage se referait à CHAQUE passage du cron, le temps écoulé
-             * vaudrait toujours zéro, et le délai de départ n'expirerait
-             * jamais. La personne resterait présente indéfiniment, le foyer ne
-             * deviendrait plus jamais vide, et l'alarme ne pourrait plus
-             * s'armer — sans un mot nulle part.
-             *
-             * Le cas n'a rien de théorique : cmd::execCmd() retombe sur la date
-             * de collecte quand l'état du cache n'en porte pas, et une
-             * réparation de cache pendant que quelqu'un est dehors suffit à y
-             * tomber. Une balise Tile absente, elle, ne publie plus rien : la
-             * situation ne se corrigerait qu'au retour de la personne.
-             *
-             * On mémorise donc l'instant où le plugin a vu ce signal pour la
-             * première fois, et c'est lui qui sert de point de départ : le
-             * décompte court pour de bon, tout en respectant l'asymétrie
-             * puisqu'il repart de la découverte et jamais d'avant.
-             */
-            $depuis = $this->premiereVue($valeur, $maintenant);
-        } else {
-            $this->oublierPremiereVue();
-        }
+        try {
+            $source = cmd::byId($idSource);
+            if (!is_object($source)) {
+                return $this->verdictSourcePerdue($verdict, $mode,
+                    __('la commande source n\'existe plus', __FILE__));
+            }
+            /* Une commande d'action n'est jamais lue : cmd::execCmd()
+             * l'EXÉCUTERAIT, à chaque minute, même en simulation. */
+            if ($source->getType() !== 'info') {
+                return $this->verdictSourcePerdue($verdict, $mode,
+                    __('la commande source n\'est pas une commande d\'information', __FILE__));
+            }
 
-        $calcul = presenciumPersonne::evaluer($valeur, $depuis, $maintenant, $reglages);
-        if (is_array($calcul)) {
-            $verdict = array_merge($verdict, $calcul);
+            $valeur = $source->execCmd();
+            /*
+             * Les dates sont lues dans le CACHE de la commande, et non par
+             * getValueDate()/getCollectDate() : quand le cache n'en porte pas
+             * (vidage, réparation), cmd::execCmd() les remplace par
+             * « maintenant ». Le décompte repartirait alors de zéro à chaque
+             * passage et un départ ne serait jamais confirmé. Une date absente
+             * mène à premiereVue(), qui, elle, ne recule pas.
+             *
+             * valueDate ne bouge que sur un changement réel de valeur : c'est
+             * l'instant où la balise a changé d'avis pour la dernière fois.
+             */
+            $dates = $source->getCache(array('valueDate', 'collectDate'), '');
+            $date = (is_array($dates) && isset($dates['valueDate'])) ? (string) $dates['valueDate'] : '';
+            $depuis = ($date === '') ? 0 : (int) strtotime($date);
+            if ($depuis <= 0 || $depuis > $maintenant) {
+                $depuis = $this->premiereVue($valeur, $maintenant);
+            } else {
+                $this->oublierPremiereVue();
+            }
+
+            /* La dernière présence stabilisée : un retour pendant un départ en
+             * cours n'est pas une nouvelle arrivée (voir evaluer()). */
+            $memoire = cache::byKey(self::CACHE_PRESENCE . $this->getId())->getValue(null);
+            $precedent = (is_array($memoire) && isset($memoire['present']))
+                       ? ((int) $memoire['present'] === 1) : null;
+
+            $calcul = presenciumPersonne::evaluer($valeur, $depuis, $maintenant, $reglages, $precedent);
+            if (is_array($calcul)) {
+                $verdict = array_merge($verdict, $calcul);
+            }
+            $verdict['source'] = true;
+            $verdict['valeur'] = $valeur;
+            $verdict['signal_depuis'] = $depuis;
+            /* La date de COLLECTE dit quand on a entendu la balise pour la
+             * dernière fois : c'est elle, et non valueDate, qui trahit une pile
+             * morte. Absente du cache : inconnue, donc 0. */
+            $collecte = (is_array($dates) && isset($dates['collectDate'])) ? (string) $dates['collectDate'] : '';
+            $collecte = ($collecte === '') ? 0 : (int) strtotime($collecte);
+            $verdict['vu_depuis'] = ($collecte > 0 && $collecte <= $maintenant)
+                                  ? (int) floor(($maintenant - $collecte) / 60) : 0;
+        } catch (Throwable $e) {
+            return $this->verdictSourcePerdue($verdict, $mode,
+                __('lecture de la source impossible :', __FILE__) . ' ' . $e->getMessage());
         }
-        $verdict['source'] = true;
-        $verdict['valeur'] = $valeur;
-        $verdict['signal_depuis'] = $depuis;
-        /* La date de COLLECTE, à ne pas confondre avec celle de valeur : la
-         * seconde dit quand le signal a changé d'avis, la première quand on
-         * l'a entendu pour la dernière fois. Une balise qui répète « présent »
-         * toutes les cinq minutes puis se tait garde une date de valeur
-         * ancienne ET une date de collecte qui cesse d'avancer — et c'est la
-         * seconde, elle seule, qui trahit une pile morte. */
-        $collecte = (string) $source->getCollectDate();
-        $collecte = ($collecte === '') ? 0 : (int) strtotime($collecte);
-        $verdict['vu_depuis'] = ($collecte > 0 && $collecte <= $maintenant)
-                              ? (int) floor(($maintenant - $collecte) / 60) : 0;
-        $verdict['mode'] = $mode;
-        $verdict['nom'] = $this->getName();
 
         return $this->appliquerMode($verdict, $mode);
+    }
+
+    /*
+     * Source configurée mais illisible : disparue, devenue une action, ou en
+     * erreur. La personne GARDE son dernier état stabilisé connu — la déclarer
+     * absente armerait l'alarme sur une panne de configuration. Sans état
+     * connu, elle est absente, comme sans source.
+     */
+    private function verdictSourcePerdue($_verdict, $_mode, $_raison) {
+        $verdict = $_verdict;
+        $memoire = cache::byKey(self::CACHE_PRESENCE . $this->getId())->getValue(null);
+        $connu = (is_array($memoire) && isset($memoire['present']));
+        $verdict['present'] = $connu ? ((int) $memoire['present'] === 1) : false;
+        $verdict['brut'] = (is_array($memoire) && !empty($memoire['brut']));
+        $verdict['transitoire'] = false;
+        $verdict['restant'] = 0;
+        $verdict['raison'] = 'source_perdue';
+        $verdict['source'] = false;
+        $verdict['source_perdue'] = true;
+        $verdict['source_perdue_raison'] = (string) $_raison;
+        $verdict['valeur'] = null;
+        $verdict['signal_depuis'] = 0;
+        $verdict['vu_depuis'] = 0;
+        $verdict['depuis'] = 0;
+        $verdict['libelle'] = sprintf($connu
+                ? __('Source perdue — dernier état gardé : %s', __FILE__)
+                : __('Source perdue — %s', __FILE__),
+            $verdict['present'] ? __('présent', __FILE__) : __('absent', __FILE__));
+        return $this->appliquerMode($verdict, $_mode);
     }
 
     /*
@@ -1045,6 +1144,33 @@ class presencium extends eqLogic {
      */
     public function rafraichirPersonne($_maintenant = null) {
         $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
+        $id = (int) $this->getId();
+        /*
+         * Verrou par personne : le cron et l'écouteur publient la même
+         * personne dans deux processus. Sans lui, les deux lisent la même
+         * mémoire, voient le même front et l'écrivent deux fois au journal.
+         * Ce passage est court : on attend son tour. Le fichier est celui de
+         * cheminVerrouFoyer(), propre à l'identifiant de l'équipement, que
+         * cronDaily() et preRemove() savent déjà nettoyer.
+         */
+        if ($id <= 0 || isset(self::$_verrousPersonne[$id])) {
+            return $this->rafraichirPersonneSousVerrou($maintenant);
+        }
+        $verrou = self::verrouFichier($this->cheminVerrouFoyer(), true);
+        self::$_verrousPersonne[$id] = true;
+        try {
+            return $this->rafraichirPersonneSousVerrou($maintenant);
+        } finally {
+            unset(self::$_verrousPersonne[$id]);
+            self::libererVerrou($verrou);
+        }
+    }
+
+    private function rafraichirPersonneSousVerrou($_maintenant) {
+        $maintenant = (int) $_maintenant;
+        /* Recalculé sous verrou, sans le mémo : la mémoire lue par le verdict
+         * vient peut-être d'être réécrite par l'autre processus. */
+        self::oublierVerdicts((int) $this->getId());
         $verdict = $this->verdictPersonne($maintenant);
         /* La même normalisation que celle qui a rendu le verdict, et jamais un
          * (int) sur la configuration brute : un champ vide vaut 15 minutes
@@ -1129,6 +1255,21 @@ class presencium extends eqLogic {
             if ($present === 1) {
                 $this->signalerFauxDepart($verdict, $avantDepuis, $maintenant, $reglages);
             }
+        }
+
+        /* Source perdue : dit une fois à la perte, une fois au retour. */
+        $perdue = !empty($verdict['source_perdue']) ? 1 : 0;
+        if ($perdue !== (empty($memoire['source_perdue']) ? 0 : 1)) {
+            if ($perdue === 1) {
+                $detail = sprintf(__('%1$s : source perdue (%2$s) — dernier état connu gardé', __FILE__),
+                    $this->getName(), isset($verdict['source_perdue_raison']) ? $verdict['source_perdue_raison'] : '');
+                log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . $detail);
+                $this->journaliserPresence('source_perdue', $detail);
+            } else {
+                $this->journaliserPresence('source_retrouvee',
+                    sprintf(__('%s : source retrouvée', __FILE__), $this->getName()));
+            }
+            $memoire['source_perdue'] = $perdue;
         }
 
         cache::set($cle, $memoire, self::CACHE_DUREE);
@@ -1259,13 +1400,7 @@ class presencium extends eqLogic {
 
         $maintenant = time();
         $verdict = $this->rafraichirPersonne($maintenant);
-        foreach (self::foyersDe((int) $this->getId()) as $foyer) {
-            try {
-                $foyer->rafraichirFoyer($maintenant);
-            } catch (Throwable $e) {
-                log::add(__CLASS__, 'error', $foyer->getHumanName() . ' : ' . $e->getMessage());
-            }
-        }
+        self::rafraichirFoyersDe((int) $this->getId(), $maintenant);
         return $verdict;
     }
 
@@ -1404,19 +1539,26 @@ class presencium extends eqLogic {
     public function instantane($_maintenant = null) {
         $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
         $presents = array();
+        $membres = array();
         $personnes = $this->personnes();
         foreach ($personnes as $personne) {
+            $membres[] = (int) $personne->getId();
             try {
-                $verdict = $personne->verdictPersonne($maintenant);
+                $present = !empty($personne->verdictPersonne($maintenant)['present']);
             } catch (Throwable $e) {
+                /* Une erreur ne fait pas partir quelqu'un : on reprend son
+                 * dernier état stabilisé, absent s'il n'y en a pas. */
                 log::add(__CLASS__, 'error', $personne->getHumanName() . ' : ' . $e->getMessage());
-                continue;
+                $memoire = cache::byKey(self::CACHE_PRESENCE . (int) $personne->getId())->getValue(null);
+                $present = (is_array($memoire) && isset($memoire['present']) && (int) $memoire['present'] === 1);
             }
-            if (!empty($verdict['present'])) {
+            if ($present) {
                 $presents[(int) $personne->getId()] = $personne->getName();
             }
         }
-        return array('presents' => $presents, 'total' => count($personnes));
+        /* `membres` : toute la composition, présents ou non — ce qui permet à
+         * transitions() de reconnaître un changement de composition. */
+        return array('presents' => $presents, 'total' => count($personnes), 'membres' => $membres);
     }
 
     /*
@@ -1456,7 +1598,7 @@ class presencium extends eqLogic {
         if (self::$_profondeurFoyer > 0) {
             log::add(__CLASS__, 'debug', $this->getHumanName() . ' : '
                    . __('réévaluation imbriquée ignorée (une action de règle rappelle le foyer).', __FILE__));
-            return array('instantane' => array('presents' => array(), 'total' => 0),
+            return array('instantane' => array('presents' => array(), 'total' => 0, 'membres' => array()),
                          'transitions' => array(), 'attentes' => array(), 'regles' => array(),
                          'etat' => array(), 'simulation' => $this->enSimulation(),
                          'imbrique' => true);
@@ -1481,18 +1623,19 @@ class presencium extends eqLogic {
          * cette section — un seul fichier pour les deux, et le foyer
          * s'attendrait lui-même indéfiniment.
          *
-         * Et le verrou N'ATTEND PAS. Les actions d'une règle sont celles d'un
-         * bloc de scénario, `wait` compris : un foyer peut tenir son verrou
-         * plusieurs minutes en toute légitimité. Un cron qui attendrait son
-         * tour empilerait alors un processus par minute jusqu'à saturer
-         * l'installation. Renoncer ne perd rien : celui qui tient le verrou
-         * fait exactement le même travail, avec un instantané plus frais, et
-         * c'est lui qui le mémorisera.
+         * Et le verrou N'ATTEND PAS : un foyer peut le tenir plusieurs
+         * secondes (actions lentes), et un cron qui attendrait son tour
+         * bloquerait tous les plugins. Mais renoncer PERD quelque chose : le
+         * détenteur a pris son instantané AVANT le changement qui réveille ce
+         * processus-ci. On pose donc un drapeau « à refaire », et le détenteur
+         * refait une passe, une seule, avant de relâcher.
          */
+        $cleRefaire = self::CACHE_REFAIRE . $this->getId();
         $verrou = self::verrouFichier($this->cheminVerrouFoyer(), false);
         if ($verrou === false) {
+            cache::set($cleRefaire, 1, 600);
             log::add(__CLASS__, 'debug', $this->getHumanName() . ' : '
-                   . __('évaluation déjà en cours dans un autre processus, passage ignoré.', __FILE__));
+                   . __('évaluation déjà en cours dans un autre processus, elle sera refaite par lui.', __FILE__));
             return array('instantane' => $this->instantane($maintenant),
                          'transitions' => array(), 'attentes' => array(), 'regles' => array(),
                          'etat' => array(), 'simulation' => $this->enSimulation(),
@@ -1501,7 +1644,14 @@ class presencium extends eqLogic {
 
         self::$_profondeurFoyer++;
         try {
-            return $this->rafraichirFoyerSousVerrou($maintenant);
+            cache::delete($cleRefaire);
+            $rendu = $this->rafraichirFoyerSousVerrou($maintenant);
+            if ((int) cache::byKey($cleRefaire)->getValue(0) === 1) {
+                cache::delete($cleRefaire);
+                self::oublierVerdicts();
+                $rendu = $this->rafraichirFoyerSousVerrou(max($maintenant, time()));
+            }
+            return $rendu;
         } finally {
             self::$_profondeurFoyer--;
             self::libererVerrou($verrou);
@@ -1891,22 +2041,26 @@ class presencium extends eqLogic {
      * et les conditions pour les montrer, et exécute quand même les actions —
      * parce que ce qu'on veut vérifier avec ce bouton, c'est justement que les
      * actions partent.
+     *
+     * $_contexte['simuler'] force la simulation (case cochée à l'écran pour
+     * un essai), en plus de enSimulation().
      */
     public function executerRegle($_regle, $_maintenant = null, $_contexte = array(), $_test = false) {
         $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
-        $simulation = $this->enSimulation($_regle);
-        $instantane = isset($_contexte['instantane']) ? $_contexte['instantane'] : $this->instantane($maintenant);
+        $simulation = $this->enSimulation($_regle) || !empty($_contexte['simuler']);
         $attenteTerminee = !empty($_contexte['attente_terminee']);
 
+        /* Le détail des présences n'est calculé qu'après les refus qui ne
+         * dépendent que de la règle : il coûte un verdict par personne. */
         $entree = array(
             'genre'       => 'regle',
             'simulation'  => $simulation,
             'essai'       => $_test ? true : false,
             'regle'       => $_regle['id'],
             'nom'         => $_regle['nom'],
-            'declencheur' => presenciumRegles::libelleDeclencheur($_regle, $this->nomsPersonnes()),
+            'declencheur' => $this->libelleDeclencheur($_regle),
             'verdict'     => 'declenchee',
-            'detail'      => $this->detailPresence($maintenant, $instantane),
+            'detail'      => '',
             'conditions'  => array(),
             'actions'     => array(),
         );
@@ -1917,6 +2071,10 @@ class presencium extends eqLogic {
         if (!$_test && !$attenteTerminee && $this->enRepos($_regle, $maintenant)) {
             return $this->conclureRegle($entree, 'repos');
         }
+
+        $instantane = isset($_contexte['instantane']) ? $_contexte['instantane'] : $this->instantane($maintenant);
+        $entree['detail'] = $this->detailPresence($maintenant, $instantane);
+
         if (!$_test && !$attenteTerminee && (int) $_regle['attente'] > 0) {
             cache::set(self::CACHE_ATTENTE . $this->getId() . '::' . $_regle['id'], array(
                 'echeance'   => $maintenant + (int) $_regle['attente'] * 60,
@@ -1967,6 +2125,12 @@ class presencium extends eqLogic {
         }
 
         $entree['actions'] = $this->executerActions($_regle, $simulation, $_test);
+        foreach ($entree['actions'] as $action) {
+            if (!empty($action['differee'])) {
+                $entree['detail'] .= ' — ' . __('actions confiées à un processus séparé (la règle contient une pause)', __FILE__);
+                break;
+            }
+        }
 
         $verdict = 'declenchee';
         if ($_test) {
@@ -2080,56 +2244,224 @@ class presencium extends eqLogic {
      * une action de règle peut partir, ce qui rend la garantie vérifiable d'un
      * coup d'œil.
      *
-     * Deux chemins d'exécution, et la différence est voulue :
+     * Une règle qui contient une pause (wait, sleep, ask) n'est jamais jouée
+     * dans le processus courant hors essai : le cron du cœur est partagé par
+     * tous les plugins, et une pause l'y gèlerait. Toute la séquence part
+     * alors dans un processus séparé (differerActions()), dans l'ordre.
      *
-     *  - en fonctionnement normal, scenarioExpression::createAndExec(), parce
-     *    que c'est lui qui sait interpréter TOUT ce qu'un bloc action de
-     *    scénario sait faire : une commande, mais aussi `wait`, `variable`,
-     *    `scenario`, un appel de userFunction… C'est ce qui rend l'éditeur de
-     *    règles aussi expressif qu'un scénario ;
-     *  - pour le bouton « Tester », la commande est résolue et exécutée ici.
-     *    Vérifié dans le cœur (scenarioExpression::execute, dernier bloc) :
-     *    tout le corps est enveloppé d'un `catch (\Throwable)` qui se contente
-     *    d'écrire dans le journal DU SCÉNARIO. Appelé hors scénario, ce journal
-     *    n'existe pas : l'erreur est donc purement et simplement avalée, et
-     *    createAndExec rend `null` aussi bien quand l'action a marché que quand
-     *    la commande n'existe plus. Un bouton « Tester » qui dit « exécutée »
-     *    quoi qu'il arrive ne teste rien. cmd::execCmd(), lui, lève.
+     * $_arrierePlan : c'est ce processus séparé qui appelle.
      */
-    private function executerActions($_regle, $_simulation, $_test) {
+    private function executerActions($_regle, $_simulation, $_test, $_arrierePlan = false) {
         $rendu = array();
         $actions = (isset($_regle['actions']) && is_array($_regle['actions'])) ? $_regle['actions'] : array();
 
+        if (!$_simulation && !$_test && !$_arrierePlan && self::regleBloquante($_regle)) {
+            return $this->differerActions($_regle, $actions);
+        }
+
         foreach ($actions as $action) {
-            $nom = isset($action['cmd']) ? (string) $action['cmd'] : '';
-            if (trim($nom) === '') {
+            $nom = isset($action['cmd']) ? trim((string) $action['cmd']) : '';
+            if ($nom === '') {
                 continue;
             }
-            $options = (isset($action['options']) && is_array($action['options'])) ? $action['options'] : array();
-
             if ($_simulation) {
-                /* Le seul chemin par lequel une action de règle peut partir
-                 * passe par les six lignes qui suivent : la garantie du mode
-                 * simulation se vérifie donc d'un coup d'œil, ici. */
                 $rendu[] = array('cmd' => $nom, 'resultat' => __('simulée', __FILE__), 'ok' => true);
                 continue;
             }
-            try {
-                if ($_test) {
-                    $cmd = self::commandeAction($action);
-                    if (!is_object($cmd)) {
-                        throw new Exception(__('commande introuvable, choisissez-la à nouveau', __FILE__));
-                    }
-                    $cmd->execCmd(count($options) > 0 ? $options : null);
-                } else {
-                    scenarioExpression::createAndExec('action', $nom, $options);
+            $rendu[] = self::executerAction($action, $_test);
+        }
+        return $rendu;
+    }
+
+    /*
+     * Une action, avec un compte-rendu qui ne ment pas.
+     *
+     * scenarioExpression::createAndExec() avale toute erreur — y compris
+     * « commande introuvable » — et ne dit rien hors scénario. Il ne sert donc
+     * plus qu'à ce qui n'est pas une commande (mots-clés de scénario,
+     * fonctions utilisateur) et à l'option « arrière-plan », et ces actions
+     * sont dites « lancées », jamais « exécutées ». Une commande est résolue
+     * ici et exécutée par cmd::execCmd(), qui lève : son échec se voit.
+     */
+    private static function executerAction($_action, $_test) {
+        $nom = isset($_action['cmd']) ? trim((string) $_action['cmd']) : '';
+        $options = (isset($_action['options']) && is_array($_action['options'])) ? $_action['options'] : array();
+
+        /* Case « Activer » décochée dans l'éditeur : le cœur ne l'exécute pas. */
+        if (isset($options['enable']) && (string) $options['enable'] === '0') {
+            return array('cmd' => $nom, 'resultat' => __('désactivée, non exécutée', __FILE__), 'ok' => true);
+        }
+
+        try {
+            if (self::estMotCle($nom)) {
+                if ($_test && in_array($nom, self::ACTIONS_HORS_ESSAI, true)) {
+                    return array('cmd' => $nom, 'ok' => true,
+                                 'resultat' => __('ignorée pendant un essai (pause, question ou arrêt de Jeedom)', __FILE__));
                 }
-                $rendu[] = array('cmd' => $nom, 'resultat' => __('exécutée', __FILE__), 'ok' => true);
-            } catch (Throwable $e) {
-                $rendu[] = array('cmd' => $nom, 'resultat' => __('échec', __FILE__) . ' : ' . $e->getMessage(), 'ok' => false);
+                scenarioExpression::createAndExec('action', $nom, $options);
+                return array('cmd' => $nom, 'resultat' => __('lancée', __FILE__), 'ok' => true);
+            }
+
+            $cmd = self::commandeAction($_action);
+            if (!is_object($cmd)) {
+                if (self::estFonction($nom)) {
+                    /* Une fonction utilisateur (data/php/user.function.class.php). */
+                    scenarioExpression::createAndExec('action', $nom, $options);
+                    return array('cmd' => $nom, 'resultat' => __('lancée', __FILE__), 'ok' => true);
+                }
+                return array('cmd' => $nom, 'ok' => false, 'resultat' => __('échec', __FILE__) . ' : '
+                             . __('commande introuvable, choisissez-la à nouveau', __FILE__));
+            }
+
+            if (!$_test && isset($options['background']) && (string) $options['background'] === '1') {
+                scenarioExpression::createAndExec('action', '#' . $cmd->getId() . '#', $options);
+                return array('cmd' => $nom, 'resultat' => __('lancée en arrière-plan', __FILE__), 'ok' => true);
+            }
+            $prepares = self::preparerOptions($cmd, $options);
+            $cmd->execCmd(count($prepares) > 0 ? $prepares : null);
+            return array('cmd' => $nom, 'resultat' => __('exécutée', __FILE__), 'ok' => true);
+        } catch (Throwable $e) {
+            return array('cmd' => $nom, 'resultat' => __('échec', __FILE__) . ' : ' . $e->getMessage(), 'ok' => false);
+        }
+    }
+
+    /* Les options telles que scenarioExpression::execute() les prépare pour
+     * une commande : noms lisibles traduits (setOptions), tags #...# évalués,
+     * curseur calculé. `enable` est retiré, comme le fait le cœur. */
+    private static function preparerOptions($_cmd, $_options) {
+        $options = array();
+        foreach ($_options as $cle => $valeur) {
+            if ($cle === 'enable') {
+                continue;
+            }
+            $valeur = jeedom::fromHumanReadable($valeur);
+            if (is_string($valeur)) {
+                $valeur = scenarioExpression::setTags($valeur);
+            }
+            $options[$cle] = $valeur;
+        }
+        if ($_cmd->getSubType() == 'slider' && isset($options['slider'])) {
+            $options['slider'] = evaluate($options['slider']);
+        }
+        return $options;
+    }
+
+    /* Un mot-clé d'action de scénario (wait, variable, scenario…). */
+    public static function estMotCle($_nom) {
+        return in_array(trim((string) $_nom), self::MOTS_CLES_ACTION, true);
+    }
+
+    /* Une fonction utilisateur du cœur (data/php/user.function.class.php),
+     * reconnue comme le fait scenarioExpression::execute(). */
+    private static function estFonction($_nom) {
+        if (!preg_match('/^([A-Za-z_][A-Za-z0-9_]*)\s*(\(.*\))?$/s', trim((string) $_nom), $morceaux)) {
+            return false;
+        }
+        $fichier = __DIR__ . '/../../../../data/php/user.function.class.php';
+        if (!class_exists('userFunction', false) && file_exists($fichier)) {
+            require_once $fichier;
+        }
+        return class_exists('userFunction', false) && method_exists('userFunction', $morceaux[1]);
+    }
+
+    /* La règle contient-elle une action qui bloque le processus ? */
+    public static function regleBloquante($_regle) {
+        $actions = (isset($_regle['actions']) && is_array($_regle['actions'])) ? $_regle['actions'] : array();
+        foreach ($actions as $action) {
+            $nom = isset($action['cmd']) ? trim((string) $action['cmd']) : '';
+            $options = (isset($action['options']) && is_array($action['options'])) ? $action['options'] : array();
+            if (isset($options['enable']) && (string) $options['enable'] === '0') {
+                continue;
+            }
+            if (in_array($nom, self::ACTIONS_BLOQUANTES, true)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /*
+     * Confie toute la séquence à un processus séparé.
+     *
+     * Par le lanceur du cœur (jeeScenarioExpression.php) : une expression de
+     * type `code` avec l'option `background` y est exécutée dans un nouveau
+     * processus php. Elle ne fait qu'appeler executerSuite() avec une clé de
+     * cache ; la règle elle-même voyage par le cache, jamais par le code.
+     */
+    private function differerActions($_regle, $_actions) {
+        $cle = self::CACHE_SUITE . (int) $this->getId() . '::' . config::genKey(16);
+        $rendu = array();
+        try {
+            cache::set($cle, array('foyer' => (int) $this->getId(), 'regle' => $_regle, 'pose' => time()), 600);
+            scenarioExpression::createAndExec('code', 'presencium::executerSuite(' . var_export($cle, true) . ');',
+                array('background' => 1));
+            $resultat = __('confiée au processus séparé', __FILE__);
+            $ok = true;
+        } catch (Throwable $e) {
+            cache::delete($cle);
+            $resultat = __('échec', __FILE__) . ' : ' . $e->getMessage();
+            $ok = false;
+        }
+        foreach ($_actions as $action) {
+            $nom = isset($action['cmd']) ? trim((string) $action['cmd']) : '';
+            if ($nom !== '') {
+                $rendu[] = array('cmd' => $nom, 'resultat' => $resultat, 'ok' => $ok, 'differee' => $ok);
             }
         }
         return $rendu;
+    }
+
+    /*
+     * Le processus séparé : joue la séquence et l'écrit au journal.
+     *
+     * La simulation est relue ici : elle a pu être activée entre-temps. La
+     * garde de réentrance est posée comme dans rafraichirFoyer() : une action
+     * qui rappelle un foyer n'y rejoue pas les règles.
+     */
+    public static function executerSuite($_cle) {
+        $cle = (string) $_cle;
+        if (strpos($cle, self::CACHE_SUITE) !== 0) {
+            return;
+        }
+        $suite = cache::byKey($cle)->getValue(null);
+        cache::delete($cle);
+        if (!is_array($suite) || !isset($suite['foyer']) || !isset($suite['regle']) || !is_array($suite['regle'])) {
+            log::add(__CLASS__, 'error', __('Suite d\'actions introuvable ou expirée :', __FILE__) . ' ' . $cle);
+            return;
+        }
+        $foyer = self::byId((int) $suite['foyer']);
+        if (!is_object($foyer) || $foyer->getEqType_name() !== __CLASS__ || $foyer->type() !== self::TYPE_FOYER) {
+            return;
+        }
+        $regle = $suite['regle'];
+        self::$_profondeurFoyer++;
+        try {
+            $simulation = $foyer->enSimulation($regle);
+            $actions = $foyer->executerActions($regle, $simulation, false, true);
+            $echecs = 0;
+            foreach ($actions as $action) {
+                if (empty($action['ok'])) {
+                    $echecs++;
+                }
+            }
+            $foyer->conclureRegle(array(
+                'genre'       => 'regle',
+                'simulation'  => $simulation,
+                'essai'       => false,
+                'regle'       => isset($regle['id']) ? $regle['id'] : '',
+                'nom'         => isset($regle['nom']) ? $regle['nom'] : '',
+                'declencheur' => $foyer->libelleDeclencheur($regle),
+                'verdict'     => 'declenchee',
+                'detail'      => __('suite des actions, jouée dans un processus séparé', __FILE__),
+                'conditions'  => array(),
+                'actions'     => $actions,
+            ), (count($actions) > 0 && $echecs === count($actions)) ? 'echec' : 'declenchee');
+        } catch (Throwable $e) {
+            log::add(__CLASS__, 'error', $foyer->getHumanName() . ' — '
+                   . (isset($regle['nom']) ? $regle['nom'] : '') . ' : ' . $e->getMessage());
+        } finally {
+            self::$_profondeurFoyer--;
+        }
     }
 
     /* La commande visée par une action : l'identifiant résolu à
@@ -2137,6 +2469,9 @@ class presencium extends eqLogic {
      * repli utile — une règle importée d'une autre installation n'a pas
      * d'identifiant qui veuille dire quelque chose. */
     public static function commandeAction($_action) {
+        if (self::estMotCle(isset($_action['cmd']) ? $_action['cmd'] : '')) {
+            return null;
+        }
         if (isset($_action['cmd_id']) && (int) $_action['cmd_id'] > 0) {
             $cmd = cmd::byId((int) $_action['cmd_id']);
             if (is_object($cmd)) {
@@ -2153,7 +2488,7 @@ class presencium extends eqLogic {
      * exécuté là-bas. */
     public static function identifiantAction($_action) {
         $nom = trim(isset($_action['cmd']) ? (string) $_action['cmd'] : '');
-        if ($nom === '') {
+        if ($nom === '' || self::estMotCle($nom)) {
             return 0;
         }
         /* Vérifié dans le cœur : cmd::humanReadableToCmd ne reconnaît un nom
@@ -2166,6 +2501,36 @@ class presencium extends eqLogic {
         }
         $brut = str_replace('#', '', jeedom::fromHumanReadable($nom));
         return is_numeric($brut) ? (int) $brut : 0;
+    }
+
+    /*
+     * L'action telle qu'enregistrée : `cmd_id` suit le nom lisible. Un nom
+     * qui ne se résout plus (objet renommé) ne fait pas perdre un identifiant
+     * encore valide : c'est le nom qui est alors rafraîchi depuis la commande.
+     * Un mot-clé ou une fonction n'a pas d'identifiant — un ancien laissé là
+     * ferait exécuter l'ancienne commande à sa place.
+     */
+    public static function resoudreAction($_action) {
+        $action = is_array($_action) ? $_action : array();
+        $nom = trim(isset($action['cmd']) ? (string) $action['cmd'] : '');
+        if ($nom === '' || self::estMotCle($nom) || self::estFonction($nom)) {
+            $action['cmd_id'] = 0;
+            return $action;
+        }
+        $id = self::identifiantAction($action);
+        if ($id > 0 && is_object(cmd::byId($id))) {
+            $action['cmd_id'] = $id;
+            return $action;
+        }
+        $ancien = isset($action['cmd_id']) ? (int) $action['cmd_id'] : 0;
+        $cmd = ($ancien > 0) ? cmd::byId($ancien) : null;
+        if (is_object($cmd)) {
+            $action['cmd_id'] = $ancien;
+            $action['cmd'] = '#' . $cmd->getHumanName() . '#';
+            return $action;
+        }
+        $action['cmd_id'] = $id;
+        return $action;
     }
 
     private function enRepos($_regle, $_maintenant) {
@@ -2214,7 +2579,7 @@ class presencium extends eqLogic {
                         'essai'       => false,
                         'regle'       => $regle['id'],
                         'nom'         => $regle['nom'],
-                        'declencheur' => presenciumRegles::libelleDeclencheur($regle, $this->nomsPersonnes()),
+                        'declencheur' => $this->libelleDeclencheur($regle),
                         'verdict'     => 'attente_annulee',
                         'detail'      => __('le déclencheur s\'est inversé pendant l\'attente', __FILE__)
                                        . ' — ' . $this->detailPresence($_maintenant, $_instantane),
@@ -2279,6 +2644,13 @@ class presencium extends eqLogic {
             $noms[(int) $personne->getId()] = $personne->getName();
         }
         return $noms;
+    }
+
+    /* Le libellé du déclencheur ; les noms ne sont chargés que si la règle
+     * nomme quelqu'un. */
+    private function libelleDeclencheur($_regle) {
+        $nominative = (isset($_regle['personne']) && (int) $_regle['personne'] > 0);
+        return presenciumRegles::libelleDeclencheur($_regle, $nominative ? $this->nomsPersonnes() : array());
     }
 
     /*
@@ -2998,6 +3370,7 @@ class presencium extends eqLogic {
         $sansSource = array();
         $sourceMorte = array();
         $sourceNonInfo = array();
+        $sourcesPerdues = array();
         $sansEcouteur = array();
         $bloquees = array();
         $muettes = array();
@@ -3022,6 +3395,11 @@ class presencium extends eqLogic {
                      */
                     $verdict = $eqLogic->verdictPersonne($maintenant);
                     $diagnostic = $eqLogic->diagnostic($maintenant, $verdict);
+
+                    if (!empty($verdict['source_perdue']) && $eqLogic->getIsEnable() == 1) {
+                        $sourcesPerdues[] = $eqLogic->getHumanName() . ' ('
+                                          . (isset($verdict['source_perdue_raison']) ? $verdict['source_perdue_raison'] : '') . ')';
+                    }
 
                     if ($diagnostic['muette'] > 0) {
                         $muettes[] = $eqLogic->getHumanName() . ' ('
@@ -3077,6 +3455,12 @@ class presencium extends eqLogic {
             }
             foreach ($eqLogic->regles() as $regle) {
                 foreach (is_array($regle['actions']) ? $regle['actions'] : array() as $action) {
+                    /* Un mot-clé (wait, variable, scenario…) ou une fonction
+                     * utilisateur n'est pas une commande : rien de mort. */
+                    $nomAction = isset($action['cmd']) ? trim((string) $action['cmd']) : '';
+                    if ($nomAction === '' || self::estMotCle($nomAction) || self::estFonction($nomAction)) {
+                        continue;
+                    }
                     if (!is_object(self::commandeAction($action))) {
                         $reglesMortes[] = $regle['nom'] . ' — ' . __('action', __FILE__) . ' '
                                         . (isset($action['cmd']) ? $action['cmd'] : '?');
@@ -3142,14 +3526,20 @@ class presencium extends eqLogic {
         $sante[] = array(
             'test'   => __('Sources disparues', __FILE__),
             'result' => (count($sourceMorte) === 0) ? __('aucune', __FILE__) : implode(', ', $sourceMorte),
-            'advice' => (count($sourceMorte) === 0) ? '' : __('La commande choisie n\'existe plus : rouvrez la personne et choisissez-en une autre.', __FILE__),
+            'advice' => (count($sourceMorte) === 0) ? '' : __('La commande choisie n\'existe plus : ces personnes restent figées sur leur dernier état connu. Rouvrez la personne et choisissez-en une autre.', __FILE__),
             'state'  => (count($sourceMorte) === 0),
         );
         $sante[] = array(
             'test'   => __('Sources qui ne sont pas des commandes d\'information', __FILE__),
             'result' => (count($sourceNonInfo) === 0) ? __('aucune', __FILE__) : implode(', ', $sourceNonInfo),
-            'advice' => (count($sourceNonInfo) === 0) ? '' : __('Une commande d\'action ne porte pas de valeur : ces personnes restent indéfiniment absentes. Choisissez une commande d\'information.', __FILE__),
+            'advice' => (count($sourceNonInfo) === 0) ? '' : __('Une commande d\'action ne porte pas de valeur : ces personnes restent figées sur leur dernier état connu. Choisissez une commande d\'information.', __FILE__),
             'state'  => (count($sourceNonInfo) === 0),
+        );
+        $sante[] = array(
+            'test'   => __('Sources perdues', __FILE__),
+            'result' => (count($sourcesPerdues) === 0) ? __('aucune', __FILE__) : implode(', ', $sourcesPerdues),
+            'advice' => (count($sourcesPerdues) === 0) ? '' : __('La source de ces personnes ne se lit plus : elles gardent leur dernier état connu, qui ne bougera plus. Rouvrez la personne et vérifiez sa commande source.', __FILE__),
+            'state'  => (count($sourcesPerdues) === 0),
         );
         $sante[] = array(
             'test'   => __('Départs qui n\'aboutissent pas', __FILE__),
@@ -3321,36 +3711,6 @@ class presencium extends eqLogic {
         $heures = (int) floor($secondes / 3600);
         $minutes = (int) floor(($secondes % 3600) / 60);
         return $heures . ' ' . __('h', __FILE__) . ' ' . str_pad((string) $minutes, 2, '0', STR_PAD_LEFT);
-    }
-
-    /* Ce qu'une carte de la page d'accueil montre, en une lecture et sans
-     * requête supplémentaire par personne. */
-    public function resume($_maintenant = null) {
-        $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
-        if ($this->type() === self::TYPE_PERSONNE) {
-            $verdict = $this->verdictPersonne($maintenant);
-            return array(
-                'type'       => self::TYPE_PERSONNE,
-                'present'    => !empty($verdict['present']),
-                'etat'       => $verdict['libelle'],
-                'mode'       => self::libelleMode($verdict['mode']),
-                'source'     => !empty($verdict['source']),
-                'simulation' => false,
-            );
-        }
-        $instantane = $this->instantane($maintenant);
-        return array(
-            'type'       => self::TYPE_FOYER,
-            'present'    => (count($instantane['presents']) > 0),
-            'etat'       => self::libelleEtatFoyer(count($instantane['presents']), (int) $instantane['total']),
-            'qui'        => implode(', ', $instantane['presents']),
-            'occupation' => count($instantane['presents']),
-            'total'      => (int) $instantane['total'],
-            'regles'     => count($this->regles()),
-            'en_service' => ($this->getConfiguration('etat_en_service', 0) == 1),
-            'armee'      => ($this->getConfiguration('etat_armee', 0) == 1),
-            'simulation' => $this->enSimulation(),
-        );
     }
 }
 
