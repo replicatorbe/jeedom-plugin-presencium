@@ -239,3 +239,9 @@ body[data-theme*="Dark"] .presenciumCarteEtat.presenciumPresent { color: #8fd18f
     outline: 2px solid #f0ad4e;
     outline-offset: 1px;
 }
+
+/* La panne de source, dite sous les badges du verdict. */
+#div_presenciumVerdict .presenciumVerdictDetail {
+    margin-top: 4px;
+    font-size: 12px;
+}

@@ -151,7 +151,11 @@ var presenciumVerdicts = {
   forcage: { classe: 'warning', texte: '{{Forçage}}' },
   arrivee: { classe: 'success', texte: '{{Arrivée}}' },
   depart: { classe: 'info', texte: '{{Départ}}' },
-  essai: { classe: 'info', texte: '{{Essai manuel}}' }
+  essai: { classe: 'info', texte: '{{Essai manuel}}' },
+  /* La commande suivie est devenue illisible : la personne garde son dernier
+     état au lieu de partir, et rien d'autre ne le dirait. */
+  source_perdue: { classe: 'warning', texte: '{{Source perdue}}' },
+  source_retrouvee: { classe: 'info', texte: '{{Source retrouvée}}' }
 }
 
 /* La couleur du liseré d'une entrée, par classe Bootstrap. Une entrée se
@@ -2423,10 +2427,24 @@ function presenciumRafraichirVerdict() {
         conteneur.appendChild(force)
       }
       presenciumMarquerForcage(mode)
+      /* Source illisible : l'état affiché n'est plus lu, il est gardé. Sans ce
+         badge, « Présent » se lirait comme une balise qui répond. Le drapeau et
+         non la raison : un forçage remplace la raison, pas la panne. */
+      var perdue = (result.source_perdue === true || result.source_perdue == 1)
+      if (perdue) {
+        var badgePerdue = presenciumBadge('warning', '{{Source perdue — dernier état gardé}}')
+        badgePerdue.style.fontWeight = 'bold'
+        conteneur.appendChild(badgePerdue)
+      }
       conteneur.appendChild(presenciumBadge('default', '{{signal brut}} : ' + (result.brut ? '1' : '0')))
       if (result.transitoire) {
         conteneur.appendChild(presenciumBadge('warning',
           '{{confirmation en cours}} — ' + presenciumEntier(result.restant, 0, 0, 100000) + ' s'))
+      }
+      if (perdue) {
+        conteneur.appendChild(presenciumText('div', 'text-warning presenciumVerdictDetail',
+          '{{La commande suivie ne se lit plus}} (' + String(init(result.source_perdue_raison, '')) + '). '
+          + '{{La personne garde son dernier état connu — absente s\'il n\'y en a pas. Rechoisissez sa « Commande de présence ».}}'))
       }
       return
     }
