@@ -74,7 +74,9 @@ try {
         unautorizedInDemo();
         $type = init('type');
         if ($type != presencium::TYPE_PERSONNE && $type != presencium::TYPE_FOYER) {
-            throw new Exception(__('Type d\'équipement inconnu :', __FILE__) . ' ' . $type);
+            /* La valeur reçue n'est pas renvoyée : elle serait réinjectée
+             * telle quelle dans la page. */
+            throw new Exception(__('Type d\'équipement inconnu.', __FILE__));
         }
         $nom = trim(init('nom'));
         if ($nom === '') {
@@ -241,8 +243,12 @@ try {
          * recalculait donc les présences pour son compte et pouvait expliquer
          * son verdict par un état différent de celui qu'on lui avait tendu.
          */
-        ajax::success($eqLogic->executerRegle($regle, $maintenant,
-            array('instantane' => $eqLogic->instantane($maintenant)), true));
+        /* `simuler` (case cochée à l'écran) force la simulation de l'essai ;
+         * il ne peut que l'ajouter, jamais retirer celle de la configuration. */
+        ajax::success($eqLogic->executerRegle($regle, $maintenant, array(
+            'instantane' => $eqLogic->instantane($maintenant),
+            'simuler'    => ((int) init('simuler', 0) === 1),
+        ), true));
     }
 
     /* Réévalue tout de suite, sans attendre la minute suivante du cron. */
@@ -280,7 +286,7 @@ try {
         $eqLogic = $getEqLogic(init('id'), presencium::TYPE_PERSONNE);
         $mode = init('mode');
         if (!in_array($mode, array('present', 'absent', 'auto'), true)) {
-            throw new Exception(__('Mode inconnu :', __FILE__) . ' ' . $mode);
+            throw new Exception(__('Mode inconnu.', __FILE__));
         }
         ajax::success($eqLogic->forcerPersonne($mode));
     }
@@ -334,7 +340,7 @@ try {
         ));
     }
 
-    throw new Exception(__('Aucune méthode correspondante à :', __FILE__) . ' ' . init('action'));
+    throw new Exception(__('Aucune méthode correspondante à :', __FILE__) . ' ' . htmlspecialchars((string) init('action'), ENT_QUOTES, 'UTF-8'));
 
 } catch (Throwable $e) {
     // Throwable et non Exception : en PHP 8 une Error (méthode inexistante,
