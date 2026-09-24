@@ -1,5 +1,76 @@
 # Changelog
 
+## 1.3
+
+Une relecture complète du plugin, faite pour trouver ce qui pouvait armer
+l'alarme sur quelqu'un de présent — ou l'empêcher de s'armer — sans que rien
+ne le dise. Cinq cas de ce genre ont été trouvés et corrigés.
+
+**Ce qui pouvait armer à tort**
+
+- **Le retour du signal n'est plus une arrivée.** Avec un délai d'arrivée
+  non nul, une balise qui revenait pendant un départ en cours faisait passer la
+  personne pour absente le temps de ce délai : un faux départ, et
+  `depart_dernier` avec. La personne qui n'a jamais été déclarée partie reste
+  présente.
+- **Modifier un foyer ne fabrique plus de départ.** La garde « composition
+  changée » ne regardait que le nombre de membres : retirer une personne
+  présente et en ajouter une absente dans le même enregistrement produisait un
+  départ. Les arrivées et départs se calculent désormais sur les membres
+  présents avant *et* après, et le vrai départ d'un autre membre dans la même
+  minute n'est plus perdu.
+- **Une source perdue ne fait plus partir personne.** Une commande source
+  supprimée — une réinstallation du plugin MQTT suffit — déclarait la personne
+  absente sur-le-champ, sans délai de départ. Elle garde maintenant son dernier
+  état connu, le journal le dit une fois, et la page Santé a une ligne
+  « Sources perdues ».
+- **« Tester » respecte ce qu'on voit.** La fenêtre de règle lisait les cases de
+  simulation à l'écran, le serveur la version enregistrée : cocher
+  « Journaliser sans exécuter » sans enregistrer, puis Tester, armait pour de
+  vrai. Une case cochée à l'écran force désormais la simulation de l'essai, et
+  un essai réel demande confirmation.
+- **Une commande sans valeur ne satisfait plus une condition.** « Luminosité
+  < 50 » était vraie sur un capteur jamais relevé. Une valeur vide ne répond
+  plus qu'à « == vide ».
+
+**Ce qui pouvait empêcher d'armer, sans un mot**
+
+- **Après un vidage de cache, le départ aboutit.** Sans date en cache, le cœur
+  datait le signal de l'instant présent, à chaque passage : le délai de départ
+  ne pouvait plus expirer. La date est lue directement dans le cache, et le
+  plugin retombe sur la première fois qu'il a vu le signal.
+- **Une action ratée n'est plus inscrite « exécutée ».** Les actions partaient
+  par leur nom lisible, par une voie du cœur qui avale les erreurs : un
+  équipement renommé, et « Armer » ne partait plus pendant que le journal
+  disait le contraire. La commande est exécutée par son identifiant, une
+  commande introuvable est un « échec », et les mots-clés de scénario
+  (`wait`, `variable`…) sont dits « lancés », pas « exécutés ».
+- **Les attentes survivent à un redémarrage.** Attentes, repos, instantané et
+  épisodes (« vide depuis ») vivaient dans le cache de Jeedom, sauvegardé
+  seulement de temps en temps. Ils sont écrits dans `data/`, par foyer.
+- **Une pause ne gèle plus Jeedom.** Un `wait` dans une règle arrêtait le cron
+  de tous les plugins pour sa durée. Une règle qui contient une pause joue ses
+  actions dans un processus séparé.
+
+**Et aussi**
+
+- Valeurs présentes par défaut élargies : `1.0`, `home`, `detected`…
+- Heure « 7:5 » acceptée ; une plage « De = À » couvre toute la journée.
+- Le seuil de la fonction *Analyser* reprend enfin le réglage global, comme la
+  1.2 l'annonçait déjà.
+- Le résultat d'*Analyser* ne s'affiche plus sur la fiche d'une autre personne,
+  et aucune recommandation « 0 min » n'est faite sans absence relevée.
+- Une condition ou une action sans commande est refusée à la validation au lieu
+  de disparaître ; la liste « Qui » ne propose que les habitants du foyer.
+- La fiche affiche le forçage en cours, et le verdict se rafraîchit seul.
+- Le journal est écrit ligne par ligne (JSON Lines) au lieu d'être réécrit en
+  entier à chaque entrée ; l'ancien format est converti sans perte.
+- Les actions de scénario ne sont plus signalées comme références mortes par la
+  page Santé.
+- Une mise à jour ne réécrit plus l'ordre ni le type générique des commandes.
+- Contrôles automatiques sous PHP 7.4 à 8.4, et un mode `--statique` pour les
+  pièges du cœur ; licence AGPL en tête de chaque fichier.
+
 ## 1.2
 
 Cette version répare ce que le journal ne disait pas. Trois des cinq points

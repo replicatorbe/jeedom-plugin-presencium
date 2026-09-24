@@ -1,7 +1,7 @@
 {
     "id": "presencium",
     "name": "Presencium",
-    "pluginVersion": "1.2",
+    "pluginVersion": "1.3",
     "description": {
         "fr_FR": "Transforme des détecteurs de présence qui rebondissent en une présence sur laquelle on peut décider, et déclenche des actions sur l'arrivée ou le départ des personnes, sous conditions, avec un mode simulation qui journalise sans rien exécuter.",
         "en_US": "Turns flapping presence detectors into a presence you can act on, and triggers actions when people arrive or leave, under conditions, with a simulation mode that logs everything without executing anything."

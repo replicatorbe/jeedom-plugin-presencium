@@ -1,5 +1,70 @@
 # Changelog
 
+## 1.3
+
+A full review of the plugin, aimed at finding whatever could arm the alarm on
+someone who is home — or keep it from arming — without anything saying so. Five
+such cases were found and fixed.
+
+**What could arm by mistake**
+
+- **A returning signal is no longer an arrival.** With a non-zero arrival
+  delay, a beacon coming back during a pending departure made the person absent
+  for the length of that delay: a false departure, and `depart_dernier` with
+  it. Someone who was never declared gone now stays present.
+- **Editing a household no longer creates a departure.** The "membership
+  changed" guard only looked at the member count: removing a present person and
+  adding an absent one in the same save produced a departure. Arrivals and
+  departures are now computed on members present both before *and* after, and
+  another member's real departure in the same minute is no longer lost.
+- **A lost source no longer makes anyone leave.** A deleted source command — a
+  reinstall of the MQTT plugin is enough — declared the person absent at once,
+  without any departure delay. They now keep their last known state, the log
+  says so once, and the Health page has a "Lost sources" line.
+- **"Test" honours what is on screen.** The rule window read the simulation
+  checkboxes on screen, the server read the saved version: ticking "Log without
+  executing" without saving, then Test, armed for real. A box ticked on screen
+  now forces the test into simulation, and a real test asks for confirmation.
+- **A command with no value no longer satisfies a condition.** "Luminosity
+  < 50" was true on a sensor never read. An empty value now only matches
+  "== empty".
+
+**What could silently keep it from arming**
+
+- **After a cache flush, the departure goes through.** With no date in cache,
+  the core dated the signal to the current instant, on every pass: the
+  departure delay could never expire. The date is read straight from the cache,
+  falling back to when the plugin first saw the signal.
+- **A failed action is no longer logged "executed".** Actions were run by their
+  human-readable name, through a core path that swallows errors: rename a
+  device, and "Arm" stopped firing while the log said otherwise. The command is
+  run by its id, a missing command is a "failure", and scenario keywords
+  (`wait`, `variable`…) are reported "launched", not "executed".
+- **Pending waits survive a restart.** Waits, cooldowns, snapshot and episodes
+  ("empty since") lived in Jeedom's cache, only saved from time to time. They
+  are written to `data/`, per household.
+- **A pause no longer freezes Jeedom.** A `wait` in a rule stopped the cron of
+  every plugin for its duration. A rule containing a pause now runs its actions
+  in a separate process.
+
+**Also**
+
+- Wider default present values: `1.0`, `home`, `detected`…
+- Time "7:5" accepted; a "From = To" range covers the whole day.
+- The *Analyse* threshold finally uses the global setting, as 1.2 already
+  announced.
+- The *Analyse* result no longer lands on another person's page, and no
+  "0 min" recommendation is made when no absence was found.
+- A condition or action with no command is refused on validation instead of
+  vanishing; the "Who" list only offers the household's members.
+- The person page shows an active override, and the verdict refreshes itself.
+- The log is appended line by line (JSON Lines) instead of being rewritten in
+  full on every entry; the old format is converted without loss.
+- Scenario actions are no longer flagged as dead references on the Health page.
+- An update no longer rewrites the order or generic type of commands.
+- Automated checks under PHP 7.4 to 8.4, and a `--statique` mode for the core
+  pitfalls; AGPL header on every file.
+
 ## 1.2
 
 This release fixes what the log was not saying. Three of the five points come
