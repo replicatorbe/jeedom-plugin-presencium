@@ -130,7 +130,12 @@ vraies (`php tests/run.php`).
 ```bash
 php tests/run.php            # les contrôles hors ligne, sans Jeedom
 php tests/check-classes.php  # les pièges du cœur, par réflexion
+php tests/check-classes.php --statique  # les mêmes, sur les sources seules, sans Jeedom
 ```
+
+L'intégration continue (`.github/workflows/work.yml`) passe `php -l`,
+`tests/run.php` et `tests/check-classes.php --statique` sous PHP 7.4, 8.0, 8.2
+et 8.4.
 
 ## Outils
 

@@ -1,0 +1,14 @@
+# Fins de ligne : le dépôt est en LF, et le reste quel que soit le poste qui
+# commite. Les binaires sont nommés pour qu'aucune conversion ne les touche.
+* text=auto eol=lf
+*.png binary
+
+# Jeedom installe un plugin depuis GitHub par l'archive « zipball » de la
+# branche (core/repo/github.repo.php), produite par git archive : ce qui est
+# marqué export-ignore n'arrive donc jamais dans /var/www/html/plugins.
+# Tests, outils et intégration continue ne servent qu'au développement.
+tests/ export-ignore
+tools/ export-ignore
+.github/ export-ignore
+.deployignore export-ignore
+.gitattributes export-ignore
