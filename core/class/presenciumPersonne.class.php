@@ -150,6 +150,10 @@ class presenciumPersonne {
      * sont — sinon '2' ne vaudrait pas 2 — et textuelle insensible à la casse
      * sinon, parce que « Home » et « home » sortent de la même passerelle selon
      * la version du firmware.
+     *
+     * Limite assumée : c'est une ÉGALITÉ, jamais un seuil. Un RSSI (« -70 »)
+     * ne dit présent qu'à -70 exactement ; pour un seuil, il faut une source
+     * qui publie déjà un binaire (un virtuel, un autre plugin).
      */
     public static function estPresentBrut($_valeur, $_valeurPresente) {
         $attendu = is_array($_valeurPresente) ? '' : trim((string) $_valeurPresente);
@@ -166,8 +170,16 @@ class presenciumPersonne {
         }
 
         if ($attendu === '1') {
-            return in_array(strtolower($valeur),
-                array('1', 'on', 'true', 'present', 'presente', 'oui', 'yes'), true);
+            /* Un nombre vaut présent s'il vaut 1, à l'epsilon près : « 1.0 »
+             * oui, « 2 » non. Sans cela, une passerelle qui publie des
+             * flottants rendrait la personne éternellement absente. */
+            if (is_numeric($valeur)) {
+                return (abs((float) $valeur - 1) < 0.000001);
+            }
+            $minuscule = function_exists('mb_strtolower') ? mb_strtolower($valeur, 'UTF-8') : strtolower($valeur);
+            return in_array($minuscule,
+                array('on', 'true', 'present', 'presente', 'oui', 'yes',
+                      'home', 'detected', 'detecte', 'détecté'), true);
         }
         if (is_numeric($valeur) && is_numeric($attendu)) {
             /* Epsilon, exactement comme presenciumRegles::comparer() : les
@@ -190,6 +202,8 @@ class presenciumPersonne {
      * $_maintenant : horodatage unix
      * $_reglages   : sortie de normaliserReglages() (une configuration brute
      *                est acceptée telle quelle, la normalisation est idempotente)
+     * $_precedent  : dernière présence stabilisée connue (true, false, ou null
+     *                si on l'ignore) — voir le retour pendant un départ.
      *
      * La règle est délibérément asymétrique, et c'est tout le sujet :
      *
@@ -213,7 +227,7 @@ class presenciumPersonne {
      * compteur, contrairement à une machine à états — qui déclarerait la
      * personne « départ en cours » un quart d'heure après chaque reboot.
      */
-    public static function evaluer($_brut, $_depuis, $_maintenant, $_reglages) {
+    public static function evaluer($_brut, $_depuis, $_maintenant, $_reglages, $_precedent = null) {
         $reglages = self::normaliserReglages($_reglages);
         $brut = self::estPresentBrut($_brut, $reglages['valeur_presente']);
 
@@ -230,7 +244,13 @@ class presenciumPersonne {
 
         if ($brut) {
             $delai = (int) $reglages['delai_arrivee'];   // secondes
-            if ($ecoule >= $delai) {
+            /* Le signal revient pendant un « départ en cours » : la personne
+             * n'a jamais cessé d'être présente, ce n'est pas une arrivée. Lui
+             * imposer le délai d'arrivée la rendrait absente le temps de ce
+             * délai — un faux départ, l'alarme armée. Sans précédent connu
+             * (null), on retombe sur le délai : du côté prudent pour une
+             * arrivée. */
+            if ($ecoule >= $delai || $_precedent === true) {
                 return array('present' => true, 'brut' => true, 'transitoire' => false,
                              'restant' => 0, 'raison' => 'presente');
             }
