@@ -6,11 +6,20 @@
 # développement : ils n'ont rien à faire dans la racine web.
 tests/
 
+# Les worktrees des agents de développement et les attributs git.
+.claude/
+.gitattributes
+
 # Le journal d'un équipement, ses verrous et ses fichiers temporaires sont
 # produits à l'exécution, côté Jeedom. Sans ces exclusions, le --delete du
 # déploiement les emporte : une campagne de simulation de plusieurs jours
 # disparaîtrait au premier correctif déployé, c'est-à-dire exactement quand on
 # a le plus besoin de la relire.
 data/journal-*.json
+data/journal-*.jsonl
+data/journal-*.illisible
+# L'état des foyers (attentes, repos, épisodes) : l'effacer au déploiement
+# rejouerait ou perdrait une attente en cours.
+data/etat-*.json
 data/*.lock
 data/*.tmp

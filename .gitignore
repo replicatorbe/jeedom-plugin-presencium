@@ -23,3 +23,6 @@ test.php
 .DS_Store
 Thumbs.db
 *.php~
+
+# Worktrees et réglages locaux de Claude Code.
+.claude/
