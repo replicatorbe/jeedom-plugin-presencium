@@ -27,21 +27,11 @@ if (!isConnect('admin')) {
  * eqLogicAttr, et rien n'est enregistré avant le « Sauvegarder » de
  * l'équipement.
  *
- * Les listes fixes (déclencheurs, opérateurs, jours) sont écrites en PHP : ce
- * sont des énumérations gelées par le contrat, et les traduire au moment du
- * rendu de la page évite un aller-retour et une seconde d'écran vide. Tout ce
- * qui vient de l'installation — les personnes, les commandes — est posé par le
- * JS, en texte, jamais en balisage.
+ * Les jours sont écrits en PHP. Les déclencheurs, eux, sont posés par le JS
+ * depuis la table unique de desktop/php/presencium.php, pour que le tableau
+ * des règles et cette fenêtre disent la même chose. Tout ce qui vient de
+ * l'installation — personnes, commandes — est posé par le JS, en texte.
  */
-$presenciumDeclencheurs = array(
-    'arrivee_premier' => '{{Le premier arrive (la maison était vide)}}',
-    'depart_dernier'  => '{{Le dernier part (la maison devient vide)}}',
-    'arrivee_tous'    => '{{Tout le monde est là}}',
-    'arrivee'         => '{{Quelqu\'un arrive}}',
-    'depart'          => '{{Quelqu\'un part}}',
-    'vide_depuis'     => '{{La maison est vide depuis…}}',
-    'occupee_depuis'  => '{{La maison est occupée depuis…}}',
-);
 $presenciumJours = array(1 => '{{Lun}}', 2 => '{{Mar}}', 3 => '{{Mer}}', 4 => '{{Jeu}}',
                          5 => '{{Ven}}', 6 => '{{Sam}}', 7 => '{{Dim}}');
 ?>
@@ -76,13 +66,7 @@ $presenciumJours = array(1 => '{{Lun}}', 2 => '{{Mar}}', 3 => '{{Mer}}', 4 => '{
                     <sup><i class="fas fa-question-circle" title="{{Le moment qui déclenche la règle. « Le premier arrive » et « Le dernier part » ne se produisent qu'au passage de la maison de vide à occupée et inversement, alors que « Quelqu'un arrive » vaut pour chaque personne. Les deux derniers ne sont pas des passages mais des durées : ils se vérifient chaque minute.}}"></i></sup>
                 </label>
                 <div class="col-sm-9">
-                    <select class="form-control" id="sel_presenciumRegleDeclencheur">
-                        <?php
-                        foreach ($presenciumDeclencheurs as $presenciumCle => $presenciumLibelle) {
-                            echo '<option value="' . $presenciumCle . '">' . $presenciumLibelle . '</option>';
-                        }
-                        ?>
-                    </select>
+                    <select class="form-control" id="sel_presenciumRegleDeclencheur"></select>
                 </div>
             </div>
 
@@ -143,7 +127,7 @@ $presenciumJours = array(1 => '{{Lun}}', 2 => '{{Mar}}', 3 => '{{Mer}}', 4 => '{
             <div class="form-group">
                 <label class="col-sm-3 control-label">
                     {{Plage horaire}}
-                    <sup><i class="fas fa-question-circle" title="{{Limite la règle à une tranche de la journée. Une plage qui passe minuit — de 22:00 à 06:00 — est acceptée telle quelle.}}"></i></sup>
+                    <sup><i class="fas fa-question-circle" title="{{Limite la règle à une tranche de la journée. Une plage qui passe minuit — de 22:00 à 06:00 — est acceptée telle quelle. « De » égal à « À » couvre toute la journée.}}"></i></sup>
                 </label>
                 <div class="col-sm-2">
                     <label class="checkbox-inline" style="padding-left:20px;">
@@ -162,6 +146,7 @@ $presenciumJours = array(1 => '{{Lun}}', 2 => '{{Mar}}', 3 => '{{Mer}}', 4 => '{
                         <input type="time" class="form-control roundedRight" id="in_presenciumRegleHeureA">
                     </div>
                 </div>
+                <div class="col-sm-offset-5 col-sm-7 help-block" id="div_presenciumRegleHeuresNote" style="margin:4px 0 0 0;"></div>
             </div>
 
             <div class="form-group">
@@ -292,9 +277,11 @@ $presenciumJours = array(1 => '{{Lun}}', 2 => '{{Mar}}', 3 => '{{Mer}}', 4 => '{
     <div id="div_presenciumRegleTest"></div>
 
     <div style="border-top:1px solid rgba(128,128,128,0.3);margin-top:10px;padding-top:10px;">
-        <span class="help-block pull-left" style="margin:0;max-width:60%;">{{« Tester » joue la règle maintenant, conditions comprises, sur la version enregistrée du foyer : sauvegardez d'abord si vous venez de la modifier. Hors simulation, l'essai commande réellement.}}</span>
+        <span class="help-block pull-left" style="margin:0;max-width:60%;">{{« Tester » joue la règle maintenant, conditions comprises, sur la version enregistrée du foyer : sauvegardez d'abord si vous venez de la modifier. L'essai est simulé si une simulation est cochée à l'écran ; sinon il commande réellement, après confirmation.}}</span>
         <span class="pull-right">
-            <a class="btn btn-default" id="bt_presenciumTesterRegle"><i class="fas fa-vial"></i> {{Tester}}</a>
+            <!-- Le title est posé sur l'enveloppe : un bouton désactivé ne
+                 reçoit plus la souris. -->
+            <span id="span_presenciumTesterRegle" style="display:inline-block;"><a class="btn btn-default" id="bt_presenciumTesterRegle"><i class="fas fa-vial"></i> {{Tester}}</a></span>
             <a class="btn btn-success" id="bt_presenciumValiderRegle"><i class="fas fa-check"></i> {{Valider}}</a>
         </span>
         <div style="clear:both;"></div>

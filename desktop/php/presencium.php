@@ -44,6 +44,58 @@ foreach ($eqLogics as $eqLogic) {
    page avant que le script ne s'exécute lui montrerait une installation qui
    a l'air d'agir pour de vrai. */
 $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 1);
+
+/* Les libellés des déclencheurs, source unique du tableau des règles et de la
+   modale. Traduits par __() avant l'envoi : une chaîne entre doubles
+   accolades, traduite APRÈS json_encode, casserait la chaîne JS au premier
+   guillemet de la traduction. Les clés sont
+   celles de presenciumRegles::DECLENCHEURS. */
+$presenciumDeclencheursTextes = array();
+foreach (array(
+    'arrivee_premier' => __('Le premier arrive — la maison était vide', __FILE__),
+    'depart_dernier'  => __('Le dernier part — la maison devient vide', __FILE__),
+    'arrivee_tous'    => __('Tout le monde est là', __FILE__),
+    'arrivee'         => __('Quelqu\'un arrive', __FILE__),
+    'depart'          => __('Quelqu\'un part', __FILE__),
+    'vide_depuis'     => __('La maison est vide depuis…', __FILE__),
+    'occupee_depuis'  => __('La maison est occupée depuis…', __FILE__),
+) as $presenciumCle => $presenciumTexte) {
+    $presenciumDeclencheursTextes[] = array('cle' => $presenciumCle, 'texte' => $presenciumTexte);
+}
+sendVarToJS('presenciumDeclencheursTextes', $presenciumDeclencheursTextes);
+
+/* Le seuil d'une vraie absence, pré-rempli depuis la configuration du plugin
+   et borné comme presencium::analyserSource (5 à 720 min). */
+$presenciumSeuilVrai = max(5, min(720, (int) presencium::reglageGlobal('seuil_vrai', presencium::SEUIL_VRAI_DEFAUT)));
+
+/* Une vignette. Le nom est composé ici plutôt que pris à getHumanName() : le
+   badge d'objet du cœur rend les cartes inégales, et affiche « Aucun » quand
+   il n'y a pas d'objet. La ligne d'objet est donc toujours là, vide au besoin,
+   pour que les cartes restent alignées.
+   Tout tient DANS .name : en vue tableau, le cœur rend .name en position
+   absolue sur toute la ligne (desktop.main.css, vers 2140), et ce qui serait
+   posé à côté se retrouverait superposé au nom.
+   $_etat est du texte ; $_detail et $_badges sont du HTML déjà échappé. */
+function presenciumVignette($_eqLogic, $_icone, $_actif, $_etat, $_detail, $_badges) {
+    $objet = $_eqLogic->getObject();
+    $nom = '<span class="presenciumCarteObjet">'
+         . (is_object($objet) ? htmlspecialchars($objet->getName(), ENT_QUOTES, 'UTF-8') : '&nbsp;')
+         . '</span><strong>' . htmlspecialchars($_eqLogic->getName(), ENT_QUOTES, 'UTF-8') . '</strong>';
+    $etat = htmlspecialchars($_etat, ENT_QUOTES, 'UTF-8');
+    echo '<div class="eqLogicDisplayCard cursor presenciumCarte ' . ($_eqLogic->getIsEnable() ? '' : 'disableCard')
+       . '" data-eqLogic_id="' . $_eqLogic->getId() . '">';
+    echo '<i class="fas ' . $_icone . ' presenciumCarteIcone" style="'
+       . ($_actif ? 'color:#5cb85c;' : 'opacity:0.55;') . '"></i>';
+    echo '<span class="name">' . $nom;
+    echo '<span class="presenciumCarteEtat ' . ($_actif ? 'presenciumPresent' : 'presenciumAbsent')
+       . '" title="' . $etat . '">' . $etat . '</span>';
+    echo $_detail . $_badges;
+    echo '</span>';
+    echo '<span class="hiddenAsCard displayTableRight hidden">';
+    echo ($_eqLogic->getIsVisible() == 1) ? '<i class="fas fa-eye" title="{{Equipement visible}}"></i>' : '<i class="fas fa-eye-slash" title="{{Equipement non visible}}"></i>';
+    echo '</span>';
+    echo '</div>';
+}
 ?>
 
 <div class="row row-overflow">
@@ -115,121 +167,51 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
         echo '<legend><i class="fas fa-user"></i> {{Mes personnes}}</legend>';
         echo '<div class="eqLogicThumbnailContainer" id="div_presenciumCartesPersonnes">';
         foreach ($presenciumPersonnes as $eqLogic) {
-            $opacity = ($eqLogic->getIsEnable()) ? '' : 'disableCard';
-            /* Le nom est composé ici plutôt que pris à getHumanName(), pour
-               deux raisons. L'étiquette d'objet du cœur est un badge avec ses
-               marges propres : une vignette rangée dans une pièce devenait
-               plus haute que les autres, et toute la rangée paraissait
-               bancale. Et quand l'équipement n'a pas d'objet, ce badge affiche
-               « Aucun » — une ligne entière pour ne rien dire.
-               La ligne d'objet est donc toujours là, vide s'il le faut : la
-               structure est identique d'une carte à l'autre, donc alignée. */
-            $objet = $eqLogic->getObject();
-            $nom = '<span class="presenciumCarteObjet">'
-                 . (is_object($objet) ? htmlspecialchars($objet->getName(), ENT_QUOTES, 'UTF-8') : '&nbsp;')
-                 . '</span><strong>' . htmlspecialchars($eqLogic->getName(), ENT_QUOTES, 'UTF-8') . '</strong>';
             $cmdPresence = $eqLogic->getCmd('info', 'presence');
             $cmdEtat = $eqLogic->getCmd('info', 'etat');
             $present = (is_object($cmdPresence) && $cmdPresence->execCmd() == 1);
             $etat = is_object($cmdEtat) ? trim((string) $cmdEtat->execCmd()) : '';
-            /* Le repli est la valeur globale, pas une constante recopiée ici :
-               une personne créée avant un changement de configuration doit se
-               lire avec le même chiffre que celui qu'affiche le plugin. */
+            /* Repli sur la valeur globale, comme le plugin lui-même. */
             $delai = $eqLogic->getConfiguration('delai_depart', '');
             $delai = ($delai === '' || $delai === null) ? (int) config::byKey('delai_depart', 'presencium', 15) : (int) $delai;
-            /* Une personne sans source n'a l'air de rien : sa présence ne
-               changera jamais, aucune erreur ne sera journalisée, et on ne s'en
-               apercevra que le jour où le foyer restera vide alors que tout le
-               monde est rentré. La vignette est le seul endroit où cela se voit
-               sans ouvrir l'équipement un par un. */
-            $source = (int) $eqLogic->getConfiguration('source', 0);
-            /* Plus aucun <br> : la carte est une colonne, tenue par
-               desktop/css/presencium.css. Les <br> enchaînés laissaient le
-               texte déborder en largeur sur la carte voisine, et poussaient
-               les avertissements sous les 168 px où le coeur les coupait. */
-            echo '<div class="eqLogicDisplayCard cursor presenciumCarte ' . $opacity . '" data-eqLogic_id="' . $eqLogic->getId() . '">';
-            echo '<i class="fas ' . ($present ? 'fa-user' : 'fa-user-slash') . ' presenciumCarteIcone" style="'
-               . ($present ? 'color:#5cb85c;' : 'opacity:0.55;') . '"></i>';
-            /* Tout tient DANS .name, et ce n'est pas un détail de mise en
-               page. En vue tableau, le cœur rend .name en position absolue sur
-               toute la largeur de la ligne et y range ses étiquettes en
-               inline-flex (desktop.main.css, vers 2140). Ce qui est posé à côté
-               de .name se retrouve alors DESSOUS, littéralement superposé au
-               nom. En adoptant sa structure, les deux vues fonctionnent avec le
-               même balisage. */
-            echo '<span class="name">' . $nom;
-            $etatLisible = ($etat === '') ? __('Pas encore évaluée', __FILE__) : $etat;
-            echo '<span class="presenciumCarteEtat ' . ($present ? 'presenciumPresent' : 'presenciumAbsent')
-               . '" title="' . htmlspecialchars($etatLisible, ENT_QUOTES, 'UTF-8') . '">'
-               . htmlspecialchars($etatLisible, ENT_QUOTES, 'UTF-8') . '</span>';
-            /* Le texte long est passé en infobulle : sur 158 px, « Départ
-               confirmé après 15 min » ne tient pas, et le tronquer sans le
-               dire ailleurs reviendrait à cacher le réglage qui compte le
-               plus dans ce plugin. */
-            echo '<span class="presenciumCarteDetail" title="{{Délai de confirmation d\'un départ : le signal doit rester absent aussi longtemps avant que la personne ne soit déclarée partie.}}">'
-               . '<i class="far fa-clock"></i> ' . $delai . ' {{min}}</span>';
-            if ($source <= 0) {
-                echo '<span class="label label-danger presenciumCarteBadge" title="{{Cette personne ne suit aucune commande : elle restera absente pour toujours et les règles d\'arrivée ne partiront pas.}}">';
-                echo '<i class="fas fa-exclamation-triangle"></i> {{Aucune source}}</span>';
+            /* Le délai en infobulle : sur 158 px, la phrase ne tient pas. */
+            $detail = '<span class="presenciumCarteDetail" title="{{Délai de confirmation d\'un départ : le signal doit rester absent aussi longtemps avant que la personne ne soit déclarée partie.}}">'
+                    . '<i class="far fa-clock"></i> ' . $delai . ' {{min}}</span>';
+            /* Une personne sans source ne produit aucune erreur : la vignette
+               est le seul endroit où cela se voit sans l'ouvrir. */
+            $badges = '';
+            if ((int) $eqLogic->getConfiguration('source', 0) <= 0) {
+                $badges .= '<span class="label label-danger presenciumCarteBadge" title="{{Cette personne ne suit aucune commande : elle restera absente pour toujours et les règles d\'arrivée ne partiront pas.}}">'
+                         . '<i class="fas fa-exclamation-triangle"></i> {{Aucune source}}</span>';
             }
-            echo '</span>';
-            echo '<span class="hiddenAsCard displayTableRight hidden">';
-            echo ($eqLogic->getIsVisible() == 1) ? '<i class="fas fa-eye" title="{{Equipement visible}}"></i>' : '<i class="fas fa-eye-slash" title="{{Equipement non visible}}"></i>';
-            echo '</span>';
-            echo '</div>';
+            presenciumVignette($eqLogic, $present ? 'fa-user' : 'fa-user-slash', $present,
+                ($etat === '') ? __('Pas encore évaluée', __FILE__) : $etat, $detail, $badges);
         }
         echo '</div>';
 
         echo '<legend><i class="fas fa-home"></i> {{Mes foyers}}</legend>';
         echo '<div class="eqLogicThumbnailContainer" id="div_presenciumCartesFoyers">';
         foreach ($presenciumFoyers as $eqLogic) {
-            $opacity = ($eqLogic->getIsEnable()) ? '' : 'disableCard';
-            /* Le nom est composé ici plutôt que pris à getHumanName(), pour
-               deux raisons. L'étiquette d'objet du cœur est un badge avec ses
-               marges propres : une vignette rangée dans une pièce devenait
-               plus haute que les autres, et toute la rangée paraissait
-               bancale. Et quand l'équipement n'a pas d'objet, ce badge affiche
-               « Aucun » — une ligne entière pour ne rien dire.
-               La ligne d'objet est donc toujours là, vide s'il le faut : la
-               structure est identique d'une carte à l'autre, donc alignée. */
-            $objet = $eqLogic->getObject();
-            $nom = '<span class="presenciumCarteObjet">'
-                 . (is_object($objet) ? htmlspecialchars($objet->getName(), ENT_QUOTES, 'UTF-8') : '&nbsp;')
-                 . '</span><strong>' . htmlspecialchars($eqLogic->getName(), ENT_QUOTES, 'UTF-8') . '</strong>';
             $membres = $eqLogic->getConfiguration('personnes', array());
             $nombre = is_array($membres) ? count($membres) : 0;
             $cmdPresence = $eqLogic->getCmd('info', 'presence');
             $cmdQui = $eqLogic->getCmd('info', 'qui');
             $occupe = (is_object($cmdPresence) && $cmdPresence->execCmd() == 1);
             $qui = is_object($cmdQui) ? trim((string) $cmdQui->execCmd()) : '';
-            $simule = $presenciumSimulationGlobale || ($eqLogic->getConfiguration('simulation', 0) == 1);
-            echo '<div class="eqLogicDisplayCard cursor presenciumCarte ' . $opacity . '" data-eqLogic_id="' . $eqLogic->getId() . '">';
-            echo '<i class="fas ' . ($occupe ? 'fa-home' : 'fa-door-closed') . ' presenciumCarteIcone" style="'
-               . ($occupe ? 'color:#5cb85c;' : 'opacity:0.55;') . '"></i>';
-            echo '<span class="name">' . $nom;
-            $quiLisible = ($qui === '') ? __('Personne n\'est là', __FILE__) : $qui;
-            echo '<span class="presenciumCarteEtat ' . ($occupe ? 'presenciumPresent' : 'presenciumAbsent')
-               . '" title="' . htmlspecialchars($quiLisible, ENT_QUOTES, 'UTF-8') . '">'
-               . htmlspecialchars($quiLisible, ENT_QUOTES, 'UTF-8') . '</span>';
-            echo '<span class="presenciumCarteDetail" title="{{Nombre d\'habitants cochés dans ce foyer.}}">'
-               . '<i class="fas fa-users"></i> ' . $nombre . '</span>';
-            /* Un foyer qui ne coche personne alors que des personnes existent
-               est un foyer vide en permanence : ses règles de départ ne
-               partiront jamais, et rien d'autre ne le signale. Le reproche
-               n'est fait que s'il y a des personnes à cocher — sinon c'est
-               l'installation qui est neuve, et c'est déjà dit plus haut. */
+            $detail = '<span class="presenciumCarteDetail" title="{{Nombre d\'habitants cochés dans ce foyer.}}">'
+                    . '<i class="fas fa-users"></i> ' . $nombre . '</span>';
+            $badges = '';
+            /* Aucun habitant coché alors qu'il y a des personnes : foyer vide
+               en permanence, que rien d'autre ne signale. */
             if ($nombre == 0 && count($presenciumPersonnes) > 0) {
-                echo '<span class="label label-warning presenciumCarteBadge" title="{{Cochez les habitants de ce foyer : sans eux, il reste vide en permanence.}}">';
-                echo '<i class="fas fa-exclamation-triangle"></i> {{Aucun habitant coché}}</span>';
+                $badges .= '<span class="label label-warning presenciumCarteBadge" title="{{Cochez les habitants de ce foyer : sans eux, il reste vide en permanence.}}">'
+                         . '<i class="fas fa-exclamation-triangle"></i> {{Aucun habitant coché}}</span>';
             }
-            if ($simule) {
-                echo '<span class="label label-warning presenciumCarteBadge" title="{{Rien n\'est exécuté : les règles de ce foyer sont jouées à blanc et journalisées.}}"><i class="fas fa-flask"></i> {{Simulation}}</span>';
+            if ($presenciumSimulationGlobale || ($eqLogic->getConfiguration('simulation', 0) == 1)) {
+                $badges .= '<span class="label label-warning presenciumCarteBadge" title="{{Rien n\'est exécuté : les règles de ce foyer sont jouées à blanc et journalisées.}}"><i class="fas fa-flask"></i> {{Simulation}}</span>';
             }
-            echo '</span>';
-            echo '<span class="hiddenAsCard displayTableRight hidden">';
-            echo ($eqLogic->getIsVisible() == 1) ? '<i class="fas fa-eye" title="{{Equipement visible}}"></i>' : '<i class="fas fa-eye-slash" title="{{Equipement non visible}}"></i>';
-            echo '</span>';
-            echo '</div>';
+            presenciumVignette($eqLogic, $occupe ? 'fa-home' : 'fa-door-closed', $occupe,
+                ($qui === '') ? __('Personne n\'est là', __FILE__) : $qui, $detail, $badges);
         }
         echo '</div>';
         ?>
@@ -451,7 +433,7 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
                                             <span class="input-group-addon">{{sur}}</span>
                                             <input type="number" min="1" max="90" step="1" class="form-control input-sm" id="in_presenciumAnalyseJours" value="7">
                                             <span class="input-group-addon">{{jours, une vraie absence dure au moins}}</span>
-                                            <input type="number" min="5" max="720" step="5" class="form-control input-sm" id="in_presenciumAnalyseSeuil" value="60">
+                                            <input type="number" min="5" max="720" step="1" class="form-control input-sm" id="in_presenciumAnalyseSeuil" value="<?php echo $presenciumSeuilVrai; ?>">
                                             <span class="input-group-addon">{{min}}</span>
                                             <span class="input-group-btn">
                                                 <a class="btn btn-sm btn-default" id="bt_presenciumAnalyser"><i class="fas fa-chart-line"></i> {{Analyser}}</a>
@@ -526,6 +508,11 @@ $presenciumSimulationGlobale = (config::byKey('simulation', 'presencium', 0) == 
                     <div class="alert alert-info" style="margin:0 0 10px 0;">
                         {{Une règle relie un moment — une arrivée, un départ, une maison vide depuis un moment — à des actions, sous conditions. Elles sont examinées dans l'ordre de cette liste, chaque minute et à chaque changement de présence.}}
                         <br>{{Tant que la simulation est active, elles sont évaluées et journalisées sans rien exécuter : l'onglet « Journal » dit ce qui se serait passé.}}
+                    </div>
+                    <!-- Montré par le JS tant que la liste diffère de celle
+                         chargée : les règles ne partent qu'au « Sauvegarder ». -->
+                    <div class="alert alert-warning" id="div_presenciumReglesNonEnregistrees" style="display:none;margin:0 0 10px 0;">
+                        <i class="fas fa-exclamation-triangle"></i> {{Modifications non enregistrées : les règles ci-dessous ne s'appliqueront qu'après « Sauvegarder ».}}
                     </div>
                     <legend>
                         <i class="fas fa-project-diagram"></i> {{Règles de ce foyer}}

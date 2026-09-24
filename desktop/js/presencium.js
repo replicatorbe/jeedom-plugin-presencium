@@ -92,18 +92,25 @@ var presenciumRegleIndex = -1
    tableau, et ce qui n'aurait pas été relu avant serait perdu. */
 var presenciumRegleCourante = null
 
-/* Les déclencheurs, dans l'ordre où ils sont proposés. Les clés sont celles de
-   presenciumRegles::DECLENCHEURS : en inventer une ici donnerait une règle que
-   le serveur normaliserait en silence vers autre chose. */
-var presenciumDeclencheurs = [
-  { cle: 'arrivee_premier', texte: '{{Le premier arrive — la maison était vide}}' },
-  { cle: 'depart_dernier', texte: '{{Le dernier part — la maison devient vide}}' },
-  { cle: 'arrivee_tous', texte: '{{Tout le monde est là}}' },
-  { cle: 'arrivee', texte: '{{Quelqu\'un arrive}}' },
-  { cle: 'depart', texte: '{{Quelqu\'un part}}' },
-  { cle: 'vide_depuis', texte: '{{La maison est vide depuis…}}' },
-  { cle: 'occupee_depuis', texte: '{{La maison est occupée depuis…}}' }
-]
+/* Les déclencheurs, dans l'ordre où ils sont proposés : { cle, texte }.
+   Source unique, posée par desktop/php/presencium.php (sendVarToJS) : le
+   tableau et la modale affichent ainsi le même libellé. */
+var presenciumDeclencheurs = (typeof presenciumDeclencheursTextes !== 'undefined' && Array.isArray(presenciumDeclencheursTextes))
+  ? presenciumDeclencheursTextes : []
+
+/* Les règles telles que chargées, en JSON : ce qui en diffère n'est pas
+   enregistré. */
+var presenciumReglesChargees = '[]'
+
+/* Vrai dès qu'un geste touche la règle ouverte dans la modale. */
+var presenciumRegleModifiee = false
+
+/* Le rafraîchissement périodique du verdict. Repris d'un chargement du script
+   à l'autre pour ne jamais laisser tourner un minuteur orphelin. */
+var presenciumMinuteurVerdict = (typeof presenciumMinuteurVerdict !== 'undefined') ? presenciumMinuteurVerdict : null
+
+/* 'ok', ou 'echec' quand la découverte des sources n'a pas répondu. */
+var presenciumSourcesEtat = 'ok'
 
 /* Mêmes valeurs que presenciumRegles::OPERATEURS. */
 var presenciumOperateurs = ['==', '!=', '>', '>=', '<', '<=']
@@ -167,6 +174,22 @@ function presenciumRaccourci(_texte) {
   return (texte.length > 300) ? (texte.substring(0, 300) + '…') : texte
 }
 
+/* Le texte d'une erreur rendue en HTML par displayException() : le message
+   seul, sans balises ni trace. */
+function presenciumTexteErreur(_html) {
+  var brut = String((_html === null || typeof _html === 'undefined') ? '' : _html)
+  var texte = brut
+  if (typeof DOMParser !== 'undefined') {
+    var doc = new DOMParser().parseFromString(brut, 'text/html')
+    var message = doc.getElementById('span_errorMessage')
+    texte = (message !== null) ? message.textContent : (doc.body ? doc.body.textContent : brut)
+  } else {
+    texte = brut.replace(/<[^>]*>/g, ' ')
+  }
+  texte = String(texte || '').replace(/\s+/g, ' ').trim()
+  return (texte === '') ? '{{Le plugin a répondu une erreur sans message.}}' : texte
+}
+
 /*
  * Le message d'un échec, quelle que soit la forme sous laquelle il arrive.
  *
@@ -198,7 +221,8 @@ function presenciumMessageErreur(_a, _b, _c) {
  *
  * _options : { button: <élément à désactiver pendant l'appel>,
  *              failure: <fonction recevant le message d'erreur>,
- *              silent: true pour ne rien afficher }
+ *              silent: true pour ne rien afficher,
+ *              delai: ms avant abandon, 60000 par défaut }
  *
  * Le transport est un fetch et non domUtils.ajax, et c'est la correction d'une
  * panne muette vérifiée dans le coeur (core/dom/dom.utils.js, ~600-650) : sur
@@ -224,15 +248,35 @@ function presenciumAjax(_action, _data, _success, _options) {
   if (button !== null) {
     button.setAttribute('disabled', 'disabled')
     button.classList.add('disabled')
-    /* Filet de sécurité conservé : une promesse peut ne jamais se résoudre
-       (onglet suspendu, veille), et un bouton mort est une page morte. */
-    setTimeout(release, 60000)
+  }
+
+  /* Filet : passé le délai, la requête est ABANDONNÉE, puis le bouton rendu.
+     Le rendre pendant qu'elle court permettait de la relancer : deux
+     « Tester », deux exécutions. */
+  var controleur = (typeof AbortController !== 'undefined') ? new AbortController() : null
+  var expiree = false
+  var messageExpiree = '{{Pas de réponse de Jeedom dans le délai : la requête a été abandonnée, mais le serveur a pu la traiter quand même.}}'
+  var minuteur = setTimeout(function () {
+    if (termine) { return }
+    expiree = true
+    if (controleur !== null) {
+      controleur.abort()
+    } else {
+      echec(messageExpiree)
+    }
+  }, isset(options.delai) ? options.delai : 60000)
+  var signalPage = (typeof domUtils !== 'undefined' && isset(domUtils.controller)) ? domUtils.controller.signal : undefined
+  var relaisAbandon = function () { if (controleur !== null) { controleur.abort() } }
+  var finir = function () {
+    termine = true
+    clearTimeout(minuteur)
+    if (signalPage) { signalPage.removeEventListener('abort', relaisAbandon) }
+    release()
   }
 
   var echec = function (_message) {
     if (termine) { return }
-    termine = true
-    release()
+    finir()
     var message = String(_message || '')
     if (message === '') { message = presenciumMessageErreur(null) }
     if (isset(options.failure)) {
@@ -244,8 +288,7 @@ function presenciumAjax(_action, _data, _success, _options) {
   }
   var reussite = function (_resultat) {
     if (termine) { return }
-    termine = true
-    release()
+    finir()
     _success(_resultat)
   }
 
@@ -260,7 +303,14 @@ function presenciumAjax(_action, _data, _success, _options) {
   /* Le signal du coeur : il n'est abattu qu'au déchargement de la page
      (dom.utils.js, beforeunload). Une requête annulée pour cette raison n'est
      pas une panne et ne doit rien afficher — la page est déjà partie. */
-  var signal = (typeof domUtils !== 'undefined' && isset(domUtils.controller)) ? domUtils.controller.signal : undefined
+  var signal = signalPage
+  if (controleur !== null) {
+    signal = controleur.signal
+    if (signalPage) {
+      if (signalPage.aborted) { controleur.abort() }
+      signalPage.addEventListener('abort', relaisAbandon)
+    }
+  }
 
   fetch('plugins/presencium/core/ajax/presencium.ajax.php', {
     method: 'POST',
@@ -287,7 +337,7 @@ function presenciumAjax(_action, _data, _success, _options) {
       }
       if (!isset(data) || data === null || data.state != 'ok') {
         throw new Error((isset(data) && data !== null && isset(data.result))
-          ? String(data.result)
+          ? presenciumTexteErreur(data.result)
           : '{{Le plugin a répondu une erreur sans message.}}')
       }
       return data.result
@@ -296,8 +346,11 @@ function presenciumAjax(_action, _data, _success, _options) {
     reussite(resultat)
   }).catch(function (erreur) {
     if (isset(erreur) && erreur !== null && erreur.name === 'AbortError') {
-      termine = true
-      release()
+      if (expiree) {
+        echec(messageExpiree)
+        return
+      }
+      finir()
       return
     }
     if (termine) {
@@ -566,8 +619,16 @@ function presenciumChargerSources() {
   if (select === null) { return }
   presenciumAjax('sources', {}, function (result) {
     presenciumSources = Array.isArray(result) ? result : []
+    presenciumSourcesEtat = 'ok'
     presenciumRenderSources()
-  }, { silent: true })
+  }, {
+    /* Un échec muet laissait une liste vide, lue « aucune balise trouvée ». */
+    failure: function () {
+      presenciumSources = []
+      presenciumSourcesEtat = 'echec'
+      presenciumRenderSources()
+    }
+  })
 }
 
 function presenciumRenderSources() {
@@ -580,7 +641,9 @@ function presenciumRenderSources() {
   select.innerHTML = ''
   var vide = document.createElement('option')
   vide.value = ''
-  vide.textContent = '{{— commandes de présence trouvées —}}'
+  vide.textContent = (presenciumSourcesEtat === 'echec')
+    ? '{{— découverte indisponible : utilisez la loupe —}}'
+    : '{{— commandes de présence trouvées —}}'
   select.appendChild(vide)
 
   for (var i = 0; i < presenciumSources.length; i++) {
@@ -809,6 +872,7 @@ function presenciumRenderRegles() {
   var tbody = table.querySelector('tbody')
   if (tbody === null) { return }
   tbody.innerHTML = ''
+  presenciumBandeauRegles()
 
   /* « Aucune règle » et « je n'ai pas lu les règles » sont deux choses
      différentes, et les confondre est la pire des réponses : elle fait croire
@@ -873,7 +937,9 @@ function presenciumLigneRegle(_regle, _index) {
   var heures = isset(conditions.heures) ? conditions.heures : {}
   if (init(heures.actif, 0) == 1) {
     cellConditions.appendChild(presenciumText('div', 'text-muted',
-      init(heures.de, '00:00') + ' → ' + init(heures.a, '23:59')))
+      presenciumPlageJourneeEntiere(heures.de, heures.a)
+        ? '{{toute la journée}}'
+        : init(heures.de, '00:00') + ' → ' + init(heures.a, '23:59')))
   }
   var jours = (isset(conditions.jours) && Array.isArray(conditions.jours)) ? conditions.jours : []
   if (jours.length > 0 && jours.length < 7) {
@@ -919,6 +985,21 @@ function presenciumLigneRegle(_regle, _index) {
   tr.appendChild(cellBoutons)
 
   return tr
+}
+
+/* Le bandeau « non enregistré » de l'onglet Règles : visible tant que la liste
+   diffère de celle chargée. */
+function presenciumBandeauRegles() {
+  var bandeau = document.getElementById('div_presenciumReglesNonEnregistrees')
+  if (bandeau === null) { return }
+  var ouvert = presenciumCurrentId(true)
+  var charge = (ouvert === null || String(presenciumChargePour) === String(ouvert))
+  bandeau.style.display = (charge && JSON.stringify(presenciumRegles) !== presenciumReglesChargees) ? '' : 'none'
+}
+
+/* De == À : le serveur lit la plage comme la journée entière. */
+function presenciumPlageJourneeEntiere(_de, _a) {
+  return String(init(_de, '00:00')) === String(init(_a, '23:59'))
 }
 
 /* Une règle vierge, avec les valeurs que le serveur poserait de toute façon :
@@ -1039,6 +1120,7 @@ function presenciumRegleEditeurDemarrer(_index) {
 
   presenciumRegleEditeurBrancher(racine)
   presenciumRegleEditeurPoser()
+  presenciumRegleModifiee = false
 }
 
 /*
@@ -1062,6 +1144,48 @@ function presenciumRegleEditeurBrancher(_racine) {
   _racine.addEventListener('click', presenciumRegleEditeurClic)
   _racine.addEventListener('change', presenciumRegleEditeurChangement)
   _racine.addEventListener('focusout', presenciumRegleEditeurSortieChamp)
+  _racine.addEventListener('input', presenciumRegleEditeurSaisie)
+
+  /* La croix de la fenêtre. beforeClose du coeur ne sait pas annuler une
+     fermeture (dom.ui.js, close() ignore son retour) : on intercepte donc le
+     clic en phase de capture, sur le conteneur, avant l'écouteur du bouton.
+     Le conteneur survit à la fenêtre : la fonction nommée évite l'empilement,
+     et elle ne fait rien quand l'éditeur n'y est plus. */
+  var dialogue = _racine.closest('div.jeeDialog')
+  if (dialogue !== null) {
+    dialogue.addEventListener('click', presenciumRegleEditeurCroix, true)
+  }
+}
+
+function presenciumRegleEditeurSaisie() {
+  if (presenciumRegleCourante !== null) { presenciumRegleModifiee = true }
+}
+
+function presenciumRegleEditeurCroix(event) {
+  var croix = event.target.closest('button.btClose')
+  if (croix === null || croix.closest('div.jeeDialog') !== event.currentTarget) { return }
+  var racine = presenciumRacineModale()
+  if (racine === null || !event.currentTarget.contains(racine)) { return }
+  if (!presenciumRegleModifiee || presenciumRegleCourante === null) { return }
+  event.stopPropagation()
+  event.preventDefault()
+  presenciumConfirmer('{{Fermer sans valider ? Les modifications faites à cette règle seront perdues.}}', function () {
+    presenciumRegleModifiee = false
+    presenciumFermerModale()
+  })
+}
+
+/* Une confirmation, par jeeDialog, bootbox à défaut, sinon le navigateur. */
+function presenciumConfirmer(_message, _oui) {
+  if (typeof jeeDialog !== 'undefined' && typeof jeeDialog.confirm === 'function') {
+    jeeDialog.confirm(_message, function (reponse) { if (reponse === true) { _oui() } })
+    return
+  }
+  if (typeof bootbox !== 'undefined' && typeof bootbox.confirm === 'function') {
+    bootbox.confirm(_message, function (reponse) { if (reponse === true) { _oui() } })
+    return
+  }
+  if (window.confirm(_message)) { _oui() }
 }
 
 function presenciumRegleEditeurClic(event) {
@@ -1069,6 +1193,10 @@ function presenciumRegleEditeurClic(event) {
   /* Une fenêtre sans règle courante n'a rien à modifier : le geste ne peut
      venir que d'un contenu qui n'est plus celui de l'éditeur. */
   if (presenciumRegleCourante === null) { return }
+
+  if (event.target.closest('#bt_presenciumAjouterCondition, .presenciumRetirerCondition, #bt_presenciumAjouterAction, .presenciumRetirerAction')) {
+    presenciumRegleModifiee = true
+  }
 
   if (event.target.closest('#bt_presenciumAjouterCondition')) {
     presenciumRegleEditeurLireConditions()
@@ -1099,6 +1227,7 @@ function presenciumRegleEditeurClic(event) {
          deviendrait fausse sans que rien ne le dise. Les ACTIONS, elles,
          gardent le nom lisible : c'est ce qu'attendent displayActionsOption
          et scenarioExpression::createAndExec. La différence est voulue. */
+      presenciumRegleModifiee = true
       ligne.setAttribute('data-cmd', String(result.cmd.id))
       presenciumAfficherNomCommande(champ, result.cmd.id)
       if (isset(result.human) && result.human !== '') {
@@ -1123,6 +1252,7 @@ function presenciumRegleEditeurClic(event) {
     var ligneCmd = cible.closest('.presenciumAction')
     jeedom.cmd.getSelectModal({ cmd: { type: 'action' } }, function (result) {
       if (!isset(result) || !isset(result.human) || String(result.human).trim() === '') { return }
+      presenciumRegleModifiee = true
       ligneCmd.querySelector('.expressionAttr[data-l1key="cmd"]').jeeValue(result.human)
       /* L'identifiant est connu ici et nulle part ailleurs : le garder permet
          à health() de dire qu'une action pointe vers une commande morte,
@@ -1141,6 +1271,7 @@ function presenciumRegleEditeurClic(event) {
     var ligneBloc = cible.closest('.presenciumAction')
     jeedom.getSelectActionModal({}, function (result) {
       if (!isset(result) || !isset(result.human) || String(result.human).trim() === '') { return }
+      presenciumRegleModifiee = true
       ligneBloc.querySelector('.expressionAttr[data-l1key="cmd"]').jeeValue(result.human)
       /* Un nom distinct de celui du rappel voisin : deux `var champId` à
          quelques lignes l'un de l'autre se lisent comme une redéclaration, et
@@ -1153,8 +1284,10 @@ function presenciumRegleEditeurClic(event) {
     return
   }
 
-  if (event.target.closest('#bt_presenciumTesterRegle')) {
-    presenciumTesterRegle(event.target.closest('#bt_presenciumTesterRegle'))
+  if (cible = event.target.closest('#bt_presenciumTesterRegle')) {
+    /* Désactivé : règle absente de la base, ou essai déjà en cours. */
+    if (cible.classList.contains('disabled')) { return }
+    presenciumTesterRegle(cible)
     return
   }
 
@@ -1166,6 +1299,11 @@ function presenciumRegleEditeurClic(event) {
 
 function presenciumRegleEditeurChangement(event) {
   if (presenciumRegleCourante === null) { return }
+  presenciumRegleModifiee = true
+  if (event.target.closest('#in_presenciumRegleHeuresActif, #in_presenciumRegleHeureDe, #in_presenciumRegleHeureA')) {
+    presenciumRegleEditeurHeures()
+    return
+  }
   if (event.target.closest('#sel_presenciumRegleDeclencheur')) {
     presenciumRegleEditeurSynchroniser()
     return
@@ -1209,10 +1347,16 @@ function presenciumRemplirSelectPersonne() {
   nimporte.textContent = '{{N\'importe qui}}'
   select.appendChild(nimporte)
 
+  /* Seulement les habitants cochés : viser quelqu'un d'autre donne une règle
+     qui ne part jamais. La personne enregistrée hors foyer reste proposée,
+     marquée, pour ne pas basculer en douce sur « n'importe qui ». */
   for (var i = 0; i < presenciumPersonnes.length; i++) {
+    var id = parseInt(presenciumPersonnes[i].id, 10)
+    var habitant = (presenciumSelectionPersonnes.indexOf(id) !== -1)
+    if (!habitant && String(id) !== courant) { continue }
     var option = document.createElement('option')
-    option.value = String(presenciumPersonnes[i].id)
-    option.textContent = presenciumPersonnes[i].nom
+    option.value = String(id)
+    option.textContent = presenciumPersonnes[i].nom + (habitant ? '' : ' {{(hors foyer)}}')
     select.appendChild(option)
   }
   select.value = courant
@@ -1272,11 +1416,7 @@ function presenciumRegleEditeurPoser() {
   var regle = presenciumRegleCourante
   if (regle === null) { return }
 
-  /* La liste des déclencheurs est posée par la charpente PHP de la modale, qui
-     la rend déjà traduite : la remplir ici aussi ne servait à rien — le code
-     ne s'exécutait jamais — et laissait croire à deux sources pour une même
-     énumération. presenciumDeclencheurs reste utile au tableau des règles, qui
-     lui n'a pas de charpente. */
+  presenciumRemplirSelectDeclencheur()
   presenciumRemplirSelectPersonne()
 
   presenciumPoserValeur('in_presenciumRegleNom', init(regle.nom, ''))
@@ -1317,33 +1457,86 @@ function presenciumRegleEditeurPoser() {
   presenciumRegleEditeurNeuve()
   presenciumRegleEditeurSimulationEtat()
   presenciumRegleEditeurSynchroniser()
+  presenciumRegleEditeurHeures()
+  presenciumRegleEditeurBoutonTester()
+}
+
+/* Les déclencheurs, depuis la table unique envoyée par la page. */
+function presenciumRemplirSelectDeclencheur() {
+  var select = document.getElementById('sel_presenciumRegleDeclencheur')
+  if (select === null) { return }
+  select.innerHTML = ''
+  for (var i = 0; i < presenciumDeclencheurs.length; i++) {
+    var option = document.createElement('option')
+    option.value = String(presenciumDeclencheurs[i].cle)
+    option.textContent = String(presenciumDeclencheurs[i].texte)
+    select.appendChild(option)
+  }
+}
+
+/* De == À : dire que la plage couvre toute la journée, comme le serveur. */
+function presenciumRegleEditeurHeures() {
+  var note = document.getElementById('div_presenciumRegleHeuresNote')
+  if (note === null) { return }
+  var actif = document.getElementById('in_presenciumRegleHeuresActif')
+  var de = document.getElementById('in_presenciumRegleHeureDe')
+  var a = document.getElementById('in_presenciumRegleHeureA')
+  var entiere = (actif !== null && actif.checked && de !== null && a !== null
+    && de.value !== '' && presenciumPlageJourneeEntiere(de.value, a.value))
+  note.textContent = entiere ? '{{« De » et « À » identiques : la plage couvre toute la journée.}}' : ''
+}
+
+/* « Tester » joue la version enregistrée : sans elle, rien à jouer. */
+function presenciumRegleEditeurBoutonTester() {
+  var bouton = document.getElementById('bt_presenciumTesterRegle')
+  if (bouton === null || presenciumRegleCourante === null) { return }
+  var enBase = presenciumRegleEnBase(String(init(presenciumRegleCourante.id, '')))
+  if (enBase) {
+    bouton.removeAttribute('disabled')
+    bouton.classList.remove('disabled')
+  } else {
+    bouton.setAttribute('disabled', 'disabled')
+    bouton.classList.add('disabled')
+  }
+  /* Le title va sur l'enveloppe : un a.btn.disabled ne reçoit plus la souris. */
+  var enveloppe = bouton.parentNode
+  if (enveloppe !== null && enveloppe.id === 'span_presenciumTesterRegle') {
+    enveloppe.setAttribute('title', enBase ? ''
+      : '{{Règle pas encore enregistrée : validez-la, sauvegardez l\'équipement, puis rouvrez-la pour la tester.}}')
+  }
 }
 
 /*
- * Ce qui s'appliquera vraiment à cette règle, simulation comprise.
- *
- * La simulation se décide à trois endroits et il suffit d'un seul pour qu'elle
- * s'impose (contrat §6) : le plugin entier, le foyer, la règle. La fenêtre ne
- * montrait que la case de la règle — décochée, elle laissait croire que la
- * règle allait agir alors que le foyer entier était en simulation, ce qui est
- * précisément la question qu'on se pose avant de cliquer sur « Tester ».
+ * La simulation telle qu'elle est À L'ÉCRAN : plugin, foyer, règle — un seul
+ * suffit (contrat §6). « Tester » envoie `simuler` d'après ces mêmes cases,
+ * et le serveur simule aussi si la version enregistrée l'est.
  */
+function presenciumSimulationEcran() {
+  /* Le bandeau n'est rendu par le PHP que si la simulation globale est
+     active. */
+  var caseFoyer = document.getElementById('in_presenciumSimulation')
+  var caseRegle = document.getElementById('in_presenciumRegleSimulation')
+  return {
+    globale: (document.getElementById('div_presenciumBandeauSimulation') !== null),
+    foyer: (caseFoyer !== null && caseFoyer.checked),
+    regle: (caseRegle !== null && caseRegle.checked)
+  }
+}
+
+/* Ce qui s'appliquera à cette règle, et à « Tester ». */
 function presenciumRegleEditeurSimulationEtat() {
   var zone = document.getElementById('div_presenciumRegleSimulationEtat')
   if (zone === null) { return }
   zone.innerHTML = ''
 
-  /* Le bandeau n'est rendu par le PHP que si la configuration globale est en
-     simulation : sa présence répond à la question sans aller-retour. */
-  var globale = (document.getElementById('div_presenciumBandeauSimulation') !== null)
-  var caseFoyer = document.getElementById('in_presenciumSimulation')
-  var foyer = (caseFoyer !== null && caseFoyer.checked)
-  var caseRegle = document.getElementById('in_presenciumRegleSimulation')
-  var regle = (caseRegle !== null && caseRegle.checked)
+  var ecran = presenciumSimulationEcran()
+  var globale = ecran.globale
+  var foyer = ecran.foyer
+  var regle = ecran.regle
 
   if (!globale && !foyer && !regle) {
     zone.appendChild(presenciumText('div', 'alert alert-info',
-      '{{Rien ne simule cette règle : ses actions seront réellement exécutées, et « Tester » les exécutera pour de vrai — armement compris.}}'))
+      '{{Rien ne simule cette règle : ses actions seront réellement exécutées. « Tester » les exécutera pour de vrai — armement compris — après confirmation.}}'))
     return
   }
 
@@ -1555,12 +1748,9 @@ function presenciumRegleEditeurAjouterAction(_action) {
  * Ce que rend réellement la variante batch, vérifié dans le coeur
  * (core/ajax/scenario.ajax.php, action 'actionToHtml') : le contrôleur écarte
  * en silence — `continue` — toute ligne dont le rendu est vide. Le seul retour
- * dégradé qui arrive ici est donc l'ABSENCE de la ligne dans la réponse ; ni
- * '' ni 'Unsupported' n'y parviennent, et 'Unsupported' n'existe d'ailleurs
- * nulle part dans le coeur de cette version. Les deux branches qui les
- * traitent sont gardées par prudence — elles ne coûtent rien et couvriraient
- * la variante unitaire ou un coeur plus ancien — mais elles ne sont pas la
- * raison pour laquelle ce code marche : ne pas les croire vérifiées.
+ * dégradé qui arrive ici est donc l'ABSENCE de la ligne dans la réponse.
+ * 'Unsupported' n'est rendu que par la variante unitaire, côté client
+ * (core/js/cmd.class.js) : il ne peut pas arriver ici.
  *
  * Dans tous les cas on CONSERVE les options existantes : enregistrer du vide à
  * la place d'un message que l'utilisateur avait rédigé est une perte muette,
@@ -1609,7 +1799,7 @@ function presenciumRafraichirOptionsActions(_force) {
       /* La requête a échoué : les options connues restent sur les lignes, on ne
          touche à rien d'autre que le message. */
       jeedomUtils.showAlert({
-        message: '{{Les options des actions n\'ont pas pu être affichées. Ce qui est enregistré est conservé.}} ' + init(error.message, ''),
+        message: '{{Les options des actions n\'ont pas pu être affichées. Ce qui est enregistré est conservé.}} ' + ((error && error.message) ? error.message : ''),
         level: 'warning'
       })
     },
@@ -1618,21 +1808,15 @@ function presenciumRafraichirOptionsActions(_force) {
       for (var i = 0; i < liste.length; i++) {
         var cible = document.getElementById(liste[i].id)
         if (cible === null) { continue }
-        delete attendus[liste[i].id]
 
         var html = liste[i].html
         if (isset(html) && html !== null && typeof html === 'object' && isset(html.html)) { html = html.html }
         html = String(isset(html) && html !== null ? html : '')
 
         var ligne = cible.closest('.presenciumAction')
-        if (html === 'Unsupported') {
-          cible.textContent = '{{Ce bloc n\'est utilisable que dans un scénario.}}'
-          continue
-        }
-        if (html === '') {
-          cible.textContent = '{{Options indisponibles : la commande visée a peut-être été supprimée. Ce qui est enregistré est conservé.}}'
-          continue
-        }
+        /* Rendu vide : traité plus bas comme une ligne non rendue. */
+        if (html === '') { continue }
+        delete attendus[liste[i].id]
         /* html() et jamais innerHTML : le rendu du coeur contient des <script>. */
         cible.html(html)
         if (ligne !== null) { ligne.presenciumOptionsEnAttente = null }
@@ -1761,6 +1945,41 @@ function presenciumRegleValider() {
     }
     regle.minutes = duree
   }
+
+  /* Une condition sans commande est fausse à chaque évaluation : la règle ne
+     partirait jamais. */
+  var lignesConditions = document.querySelectorAll('#table_presenciumConditions tbody tr')
+  for (var c = 0; c < lignesConditions.length; c++) {
+    if (presenciumEntier(lignesConditions[c].getAttribute('data-cmd'), 0, 0, 99999999) > 0) { continue }
+    jeedomUtils.showAlert({
+      message: '{{Une condition n\'a pas de commande : choisissez-la avec la loupe, ou retirez la ligne.}}',
+      level: 'warning'
+    })
+    var loupe = lignesConditions[c].querySelector('.presenciumChoisirCondition')
+    if (loupe !== null) { loupe.focus() }
+    return
+  }
+
+  /* Une ligne d'action vide disparaissait en silence à la relecture. */
+  var champsActions = document.querySelectorAll('#div_presenciumActions .presenciumAction .expressionAttr[data-l1key="cmd"]')
+  for (var a = 0; a < champsActions.length; a++) {
+    if (String(champsActions[a].value || '').trim() !== '') { continue }
+    jeedomUtils.showAlert({
+      message: '{{Une action n\'a pas de commande : choisissez-la, ou retirez la ligne.}}',
+      level: 'warning'
+    })
+    champsActions[a].focus()
+    return
+  }
+
+  if ((regle.declencheur === 'arrivee' || regle.declencheur === 'depart') && regle.personne > 0
+      && presenciumSelectionPersonnes.indexOf(regle.personne) === -1) {
+    jeedomUtils.showAlert({
+      message: '{{La personne visée n\'est pas cochée dans ce foyer : tant qu\'elle n\'y habite pas, cette règle ne se déclenchera pas.}}',
+      level: 'warning', timeOut: 8000
+    })
+  }
+
   if (regle.actions.length === 0) {
     jeedomUtils.showAlert({
       message: '{{Cette règle n\'a aucune action : elle sera évaluée et journalisée, mais ne fera jamais rien.}}',
@@ -1775,6 +1994,7 @@ function presenciumRegleValider() {
   }
   presenciumRenderRegles()
   presenciumMarkModified()
+  presenciumRegleModifiee = false
   presenciumFermerModale()
   jeedomUtils.showAlert({ message: '{{Règle enregistrée dans le foyer. Pensez à sauvegarder l\'équipement.}}', level: 'success' })
 }
@@ -1830,9 +2050,26 @@ function presenciumTesterRegle(_bouton) {
     return
   }
 
-  dire('text-muted', '{{Test en cours…}}')
+  /* Une case cochée à l'écran suffit à simuler l'essai, même si la version
+     enregistrée ne l'est pas : le serveur force alors la simulation. */
+  var ecran = presenciumSimulationEcran()
+  var simuler = (ecran.globale || ecran.foyer || ecran.regle)
+  if (simuler) {
+    presenciumLancerTest(_bouton, id, identifiant, true, dire)
+    return
+  }
+  presenciumConfirmer('{{Ceci exécutera réellement les actions de la règle enregistrée — armement de l\'alarme compris. Continuer ?}}', function () {
+    presenciumLancerTest(_bouton, id, identifiant, false, dire)
+  })
+}
 
-  presenciumAjax('testerRegle', { id: id, regle: identifiant }, function (result) {
+function presenciumLancerTest(_bouton, _id, _regle, _simuler, _dire) {
+  var sortie = document.getElementById('div_presenciumRegleTest')
+  _dire('text-muted', '{{Test en cours…}}')
+
+  var donnees = { id: _id, regle: _regle }
+  if (_simuler) { donnees.simuler = 1 }
+  presenciumAjax('testerRegle', donnees, function (result) {
     if (sortie === null) { return }
     sortie.innerHTML = ''
     sortie.appendChild(presenciumText('div', 'text-muted',
@@ -1844,7 +2081,7 @@ function presenciumTesterRegle(_bouton) {
        est inconnu et qu'il faut d'abord enregistrer. Le réécrire ici
        masquerait la seule information utile. */
     failure: function (message) {
-      dire('alert alert-danger', message)
+      _dire('alert alert-danger', message)
     }
   })
 }
@@ -1904,7 +2141,9 @@ function presenciumEntreeJournal(_entree) {
     badgeEssai.style.fontWeight = 'bold'
     entete.appendChild(badgeEssai)
   }
-  entete.appendChild(presenciumBadge('default', init(entree.genre, '')))
+  var genres = { regle: '{{Règle}}', presence: '{{Présence}}', alarme: '{{Alarme}}' }
+  var genre = String(init(entree.genre, ''))
+  entete.appendChild(presenciumBadge('default', isset(genres[genre]) ? genres[genre] : genre))
   bloc.appendChild(entete)
 
   var titre = document.createElement('div')
@@ -1970,6 +2209,11 @@ function presenciumRenderAnalyse(_resultat) {
   if (sortie === null) { return }
   sortie.innerHTML = ''
   if (!isset(_resultat) || !isset(_resultat.lignes)) { return }
+  /* Sans aucune absence relevée, aucun délai n'est « meilleur » : ne rien
+     recommander plutôt qu'« Appliquer 0 min ». */
+  var episodes = parseInt(init(_resultat.episodes, 0), 10)
+  var recommande = (episodes > 0 && isset(_resultat.recommande) && _resultat.recommande !== null)
+    ? _resultat.recommande : null
 
   var resume = presenciumText('div', 'text-muted',
     init(_resultat.heures, 0) + ' {{h d\'historique}} — ' + init(_resultat.episodes, 0) + ' {{absences}} : '
@@ -1996,8 +2240,7 @@ function presenciumRenderAnalyse(_resultat) {
   for (var i = 0; i < _resultat.lignes.length; i++) {
     var l = _resultat.lignes[i]
     var tr = document.createElement('tr')
-    var retenu = (isset(_resultat.recommande) && _resultat.recommande !== null
-                  && parseInt(l.delai, 10) === parseInt(_resultat.recommande, 10))
+    var retenu = (recommande !== null && parseInt(l.delai, 10) === parseInt(recommande, 10))
     if (retenu) { tr.style.cssText = 'background:rgba(92,184,92,0.14);font-weight:700;' }
 
     tr.appendChild(presenciumText('td', '', init(l.delai, 0) + ' {{min}}'))
@@ -2022,7 +2265,13 @@ function presenciumRenderAnalyse(_resultat) {
   table.appendChild(tbody)
   sortie.appendChild(table)
 
-  if (!isset(_resultat.recommande) || _resultat.recommande === null) {
+  if (episodes <= 0) {
+    sortie.appendChild(presenciumText('div', 'alert alert-info',
+      '{{Aucune absence relevée sur cette période : rien à recommander. Vérifiez que la commande suivie est historisée, ou allongez la fenêtre d\'analyse.}}'))
+    return
+  }
+
+  if (recommande === null) {
     /* Aucun délai ne sépare les deux familles : le dire vaut mieux que d'en
        désigner un. Cela arrive quand les décrochages de la balise durent plus
        longtemps qu'une vraie sortie — le réglage ne peut alors pas réparer ce
@@ -2033,7 +2282,7 @@ function presenciumRenderAnalyse(_resultat) {
   }
 
   var conseil = presenciumText('div', 'alert alert-success',
-    '{{Délai retenu :}} ' + _resultat.recommande + ' {{min}}. '
+    '{{Délai retenu :}} ' + recommande + ' {{min}}. '
     + '{{C\'est le plus petit qui ne laisse passer aucune fausse absence et ne perd aucune vraie.}} '
     + ((parseInt(_resultat.plus_longue_courte, 10) > 0)
         ? '{{La plus longue fausse absence mesurée dure}} ' + _resultat.plus_longue_courte + ' {{min}} ; '
@@ -2105,11 +2354,8 @@ function presenciumRenderJournal() {
     if (courant === null || String(courant) !== String(id)) { return }
 
     conteneur.innerHTML = ''
-    /* Le point d'entrée rendait un tableau nu avant de rendre le total : on
-       accepte les deux, faute de quoi un navigateur qui garde l'ancien script
-       en cache afficherait un journal vide sans rien expliquer. */
-    var charge = Array.isArray(result) ? { entrees: result, total: result.length, taille: 0 }
-                                       : (result || {})
+    /* { entrees, total, taille } : la seule forme que rend le serveur. */
+    var charge = result || {}
     var entrees = Array.isArray(charge.entrees) ? charge.entrees : []
     var total = parseInt(init(charge.total, entrees.length), 10)
     var taille = parseInt(init(charge.taille, 0), 10)
@@ -2152,17 +2398,30 @@ function presenciumRafraichirVerdict() {
   var conteneur = document.getElementById('div_presenciumVerdict')
   if (conteneur === null) { return }
   var id = presenciumCurrentId(true)
-  if (id === null) { conteneur.innerHTML = ''; return }
+  if (id === null) {
+    conteneur.innerHTML = ''
+    presenciumMarquerForcage('')
+    return
+  }
 
   presenciumAjax('verdict', { id: id }, function (result) {
     var courant = presenciumCurrentId(true)
     if (courant === null || String(courant) !== String(id)) { return }
     conteneur.innerHTML = ''
+    presenciumMarquerForcage('')
     if (!isset(result) || result === null) { return }
 
     if (isset(result.raison)) {
       conteneur.appendChild(presenciumBadge(result.present ? 'success' : 'default',
         result.present ? '{{Présent}}' : '{{Absent}}'))
+      /* Un forçage fait taire la balise : il doit se voir avant le reste. */
+      var mode = String(init(result.mode, 'auto'))
+      if (mode === 'present' || mode === 'absent') {
+        var force = presenciumBadge('warning', (mode === 'present') ? '{{Forcé présent}}' : '{{Forcé absent}}')
+        force.style.fontWeight = 'bold'
+        conteneur.appendChild(force)
+      }
+      presenciumMarquerForcage(mode)
       conteneur.appendChild(presenciumBadge('default', '{{signal brut}} : ' + (result.brut ? '1' : '0')))
       if (result.transitoire) {
         conteneur.appendChild(presenciumBadge('warning',
@@ -2184,6 +2443,43 @@ function presenciumRafraichirVerdict() {
   }, { silent: true })
 }
 
+/* Le bouton du forçage en cours, enfoncé ; '' les relâche tous. */
+function presenciumMarquerForcage(_mode) {
+  var boutons = { present: 'bt_presenciumForcerPresent', absent: 'bt_presenciumForcerAbsent', auto: 'bt_presenciumAuto' }
+  for (var mode in boutons) {
+    var bouton = document.getElementById(boutons[mode])
+    if (bouton === null) { continue }
+    bouton.classList.toggle('active', mode === _mode)
+  }
+}
+
+/*
+ * Le verdict affiché se fige : « encore 8 min » le reste. On le relit toutes
+ * les 30 s tant que la fiche d'une personne est ouverte et visible. Le
+ * minuteur s'arrête seul quand la page ou l'équipement changent.
+ */
+function presenciumSuivreVerdict() {
+  if (presenciumMinuteurVerdict !== null) {
+    clearInterval(presenciumMinuteurVerdict)
+    presenciumMinuteurVerdict = null
+  }
+  var id = presenciumCurrentId(true)
+  if (id === null || presenciumType() !== 'personne') { return }
+  presenciumMinuteurVerdict = setInterval(function () {
+    var conteneur = document.getElementById('div_presenciumVerdict')
+    var courant = presenciumCurrentId(true)
+    if (conteneur === null || courant === null || String(courant) !== String(id) || presenciumType() !== 'personne') {
+      clearInterval(presenciumMinuteurVerdict)
+      presenciumMinuteurVerdict = null
+      return
+    }
+    /* Caché (autre onglet, liste des vignettes, navigateur en arrière-plan) :
+       on attend sans interroger. */
+    if (conteneur.offsetParent === null || document.visibilityState === 'hidden') { return }
+    presenciumRafraichirVerdict()
+  }, 30000)
+}
+
 /* ================================================== CYCLE DE VIE DE LA PAGE */
 
 function printEqLogic(_eqLogic) {
@@ -2197,6 +2493,7 @@ function printEqLogic(_eqLogic) {
     presenciumChargePour = String(init(_eqLogic.id, ''))
     presenciumRegles = (isset(configuration.regles) && Array.isArray(configuration.regles))
       ? JSON.parse(JSON.stringify(configuration.regles)) : []
+    presenciumReglesChargees = JSON.stringify(presenciumRegles)
     /* Ce qui est EN BASE, relevé avant que l'écran ne puisse le modifier :
        c'est cette liste qui autorise « Tester », lequel joue la règle
        enregistrée et non celle qu'on est en train de saisir. */
@@ -2224,6 +2521,7 @@ function printEqLogic(_eqLogic) {
     if (journal !== null) { journal.innerHTML = '' }
     var verdict = document.getElementById('div_presenciumVerdict')
     if (verdict !== null) { verdict.innerHTML = '' }
+    presenciumMarquerForcage('')
     var analyse = document.getElementById('div_presenciumAnalyse')
     if (analyse !== null) { analyse.innerHTML = '' }
 
@@ -2236,6 +2534,7 @@ function printEqLogic(_eqLogic) {
   if (type === 'foyer') { presenciumChargerPersonnes() }
   if (type === 'personne' || type === 'foyer') { presenciumRenderJournal() }
   presenciumRafraichirVerdict()
+  presenciumSuivreVerdict()
 }
 
 /*
@@ -2514,7 +2813,7 @@ presenciumContainer.addEventListener('click', function (event) {
   if (cible = event.target.closest('#bt_presenciumForcerPresent, #bt_presenciumForcerAbsent, #bt_presenciumAuto')) {
     var idForcage = presenciumCurrentId()
     if (idForcage === null) { return }
-    var mode = cible.id === 'bt_presenciumForcerPresent' ? 'present'
+    var mode = (cible.id === 'bt_presenciumForcerPresent') ? 'present'
              : (cible.id === 'bt_presenciumForcerAbsent' ? 'absent' : 'auto')
     presenciumAjax('forcer', { id: idForcage, mode: mode }, function () {
       presenciumRafraichirVerdict()
@@ -2564,12 +2863,17 @@ presenciumContainer.addEventListener('click', function (event) {
     presenciumAjax('analyser', {
       id: idAnalyse,
       jours: presenciumEntier((document.getElementById('in_presenciumAnalyseJours') || {}).value, 7, 1, 90),
+      /* Mêmes bornes que le champ et que presencium::analyserSource. */
       seuil: presenciumEntier((document.getElementById('in_presenciumAnalyseSeuil') || {}).value, 60, 5, 720)
     }, function (resultat) {
+      /* Réponse d'un équipement qu'on a quitté entre-temps : ignorée. */
+      if (String(presenciumCurrentId(true)) !== String(idAnalyse)) { return }
       presenciumRenderAnalyse(resultat)
     }, {
       button: cible,
+      delai: 180000,
       failure: function (message) {
+        if (String(presenciumCurrentId(true)) !== String(idAnalyse)) { return }
         if (sortieAnalyse === null) { return }
         sortieAnalyse.innerHTML = ''
         sortieAnalyse.appendChild(presenciumText('div', 'alert alert-warning', String(message || '')))
