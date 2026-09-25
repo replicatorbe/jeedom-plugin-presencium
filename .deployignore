@@ -6,8 +6,7 @@
 # développement : ils n'ont rien à faire dans la racine web.
 tests/
 
-# Les worktrees des agents de développement et les attributs git.
-.claude/
+# Les attributs git.
 .gitattributes
 
 # Le journal d'un équipement, ses verrous et ses fichiers temporaires sont
