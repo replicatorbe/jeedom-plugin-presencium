@@ -176,12 +176,12 @@ if (!$cmdTrouvee) {
  * l'appel. Or le coeur l'entoure d'un catch (Exception), qui n'attrape pas les
  * Error de PHP 8. Ce n'est donc pas le plugin qui tombe, mais la page Santé de
  * toute l'installation, en HTTP 500. Le même raisonnement vaut pour les crons,
- * et pour onSource() : jeeListener.php l'appelle sur la classe, dans un
+ * et pour onSource() et onAlarme() : jeeListener.php l'appelle sur la classe, dans un
  * processus séparé où l'erreur ne se voit nulle part. */
 $staticHooks = array('health', 'cron', 'cron5', 'cron10', 'cron15', 'cron30',
                      'cronHourly', 'cronDaily', 'deamon_info', 'deamon_start',
                      'deamon_stop', 'deamon_changeAutoMode', 'dependancy_info',
-                     'dependancy_install', 'templateWidget', 'pull', 'onSource',
+                     'dependancy_install', 'templateWidget', 'pull', 'onSource', 'onAlarme',
                      'sourcesCandidates');
 foreach ($duCoeur as $morceau) {
     if ($morceau['nature'] === 'cmd') {

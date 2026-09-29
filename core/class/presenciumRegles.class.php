@@ -888,6 +888,48 @@ class presenciumRegles {
         return false;
     }
 
+    /*
+     * Les réglages de l'alarme liée d'un foyer, normalisés.
+     *
+     * Ici plutôt que dans le trait de l'alarme pour la même raison que le
+     * reste de cette classe : sans Jeedom, donc éprouvé hors ligne. Et avec
+     * comparer(), qui lit l'état de la centrale exactement comme une ligne de
+     * condition lit une commande — un seul sens pour « == 1 » dans tout le
+     * plugin.
+     *
+     *  - `alarme_liee` : 0 ou 1, et 0 par défaut. C'est ce qui garantit
+     *    qu'aucun foyer existant ne change de comportement à la mise à jour.
+     *  - les commandes, par IDENTIFIANT : un nom lisible devient faux au
+     *    premier renommage d'objet, et une alarme qu'on croit pilotée alors
+     *    qu'elle ne l'est plus ne se voit nulle part. « #6908# » est accepté
+     *    (c'est ce qu'on colle depuis la configuration d'une commande), et
+     *    ramené à 6908.
+     *  - `alarme_operateur` et `alarme_valeur` : « == 1 » par défaut, la forme
+     *    d'une info binaire « Armée ». Une valeur vide retombe sur 1 : « armée
+     *    quand l'état vaut vide » ne décrit aucune centrale, et laisserait
+     *    une commande jamais collectée passer pour armée.
+     */
+    public static function normaliserAlarme($_configuration) {
+        $configuration = is_array($_configuration) ? $_configuration : array();
+        $lire = function ($_cle, $_defaut) use ($configuration) {
+            return (isset($configuration[$_cle]) && $configuration[$_cle] !== null) ? $configuration[$_cle] : $_defaut;
+        };
+        $normale = array(
+            'alarme_liee' => self::caseCochee($lire('alarme_liee', 0)) ? 1 : 0,
+        );
+        foreach (array('alarme_etat', 'alarme_cmd_armer', 'alarme_cmd_desarmer', 'alarme_cmd_nuit') as $cle) {
+            $brut = $lire($cle, 0);
+            $brut = is_scalar($brut) ? trim(str_replace('#', '', (string) $brut)) : '';
+            $normale[$cle] = (ctype_digit($brut) && (int) $brut > 0) ? (int) $brut : 0;
+        }
+        $operateur = $lire('alarme_operateur', '==');
+        $normale['alarme_operateur'] = (is_string($operateur) && in_array($operateur, self::OPERATEURS, true)) ? $operateur : '==';
+        $valeur = $lire('alarme_valeur', '1');
+        $valeur = is_scalar($valeur) ? trim((string) $valeur) : '';
+        $normale['alarme_valeur'] = ($valeur === '') ? '1' : $valeur;
+        return $normale;
+    }
+
     /* Ramène ce qui arrive d'une commande à une chaîne comparable, ou null si
      * ce n'est pas comparable du tout. null devient '' et non '0' : une
      * commande jamais collectée n'est pas zéro. */

@@ -1096,6 +1096,43 @@ verifie('00:30 un samedi, jours lun–ven, sans plage : écartée',
 verifieVrai('00:30 un vendredi : admise',
             presenciumRegles::horaireOk($semaineHeure, strtotime('2026-09-25 00:30')));
 
+/* --------------------------------------------------------- ALARME LIÉE ---
+ * Les réglages de l'alarme liée d'un foyer. Le point qui compte est le
+ * premier : un foyer enregistré avant que la liaison existe doit en sortir
+ * NON lié, sans quoi la mise à jour ferait taire ses actions Armer et
+ * Désarmer du jour au lendemain. Le comportement lui-même (état suivi, ordres,
+ * simulation) est éprouvé dans tests/moteur.php. */
+echo "\nAlarme liée : réglages\n";
+$ancien = presenciumRegles::normaliserAlarme(array('type' => 'foyer', 'etat_armee' => 1, 'regles' => array()));
+verifie('foyer existant : non lié', $ancien['alarme_liee'], 0);
+verifie('foyer existant : aucune commande', array($ancien['alarme_etat'], $ancien['alarme_cmd_armer'],
+        $ancien['alarme_cmd_desarmer'], $ancien['alarme_cmd_nuit']), array(0, 0, 0, 0));
+verifie('foyer existant : « == 1 » par défaut', $ancien['alarme_operateur'] . ' ' . $ancien['alarme_valeur'], '== 1');
+verifie('aucune configuration : les défauts', presenciumRegles::normaliserAlarme(null), $ancien);
+$ajax = presenciumRegles::normaliserAlarme(array('alarme_liee' => '1', 'alarme_etat' => '#6908#',
+        'alarme_cmd_armer' => '7002', 'alarme_cmd_desarmer' => 7004, 'alarme_cmd_nuit' => ' 7003 ',
+        'alarme_operateur' => '==', 'alarme_valeur' => ' 1 '));
+verifie('case cochée « 1 » : liée', $ajax['alarme_liee'], 1);
+verifie('« #6908# » devient 6908', $ajax['alarme_etat'], 6908);
+verifie('les ordres deviennent des entiers',
+        array($ajax['alarme_cmd_armer'], $ajax['alarme_cmd_desarmer'], $ajax['alarme_cmd_nuit']), array(7002, 7004, 7003));
+verifie('valeur rognée', $ajax['alarme_valeur'], '1');
+verifie('normalisation idempotente', presenciumRegles::normaliserAlarme($ajax), $ajax);
+$sale = presenciumRegles::normaliserAlarme(array('alarme_liee' => 'on', 'alarme_etat' => 'Armée',
+        'alarme_cmd_armer' => -5, 'alarme_cmd_nuit' => array(1), 'alarme_operateur' => '=~', 'alarme_valeur' => ''));
+verifie('case « on » : liée', $sale['alarme_liee'], 1);
+verifie('un nom au lieu d\'un identifiant : aucune commande', $sale['alarme_etat'], 0);
+verifie('un négatif : aucune commande', $sale['alarme_cmd_armer'], 0);
+verifie('un tableau : aucune commande', $sale['alarme_cmd_nuit'], 0);
+verifie('opérateur inconnu : ==', $sale['alarme_operateur'], '==');
+verifie('valeur vide : 1, jamais « armée quand vide »', $sale['alarme_valeur'], '1');
+verifie('case décochée « 0 » : non liée', presenciumRegles::normaliserAlarme(array('alarme_liee' => '0'))['alarme_liee'], 0);
+verifie('case décochée vide : non liée', presenciumRegles::normaliserAlarme(array('alarme_liee' => ''))['alarme_liee'], 0);
+/* L'état texte d'une centrale se lit avec la comparaison des conditions. */
+verifie('« Mode nuit » != Désarmé', presenciumRegles::comparer('Mode nuit', '!=', 'Désarmé'), true);
+verifie('« Désarmé » != Désarmé', presenciumRegles::comparer('Désarmé', '!=', 'Désarmé'), false);
+verifie('valeur inconnue != Désarmé : faux, pas armée', presenciumRegles::comparer('', '!=', 'Désarmé'), false);
+
 /* ----------------------------------------------------------- LE MOTEUR ---
  * Le moteur de règles (attentes, relances) a son propre jeu d'essai,
  * tests/moteur.php, parce qu'il a besoin de doublures du coeur de Jeedom — une

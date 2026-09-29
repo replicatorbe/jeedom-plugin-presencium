@@ -1,7 +1,22 @@
 # Changelog
 
-## En préparation
+## 1.4
 
+- **Alarme liée : relier le foyer à une vraie alarme.** Nouvelle section
+  « Alarme liée » du foyer (décochée par défaut, aucun changement pour les
+  foyers existants) : une commande d'état de la centrale, comparée comme une
+  ligne de condition, et les commandes à exécuter pour *Armer*, *Désarmer* et,
+  facultativement, *Mode nuit*. Relié, « Alarme armée » suit l'état réel
+  (écouteur, cron, enregistrement) — types génériques compris, pour Google,
+  Matter et les widgets ; *Armer* et *Désarmer* envoient les ordres à la
+  centrale sans écrire l'état d'avance ; la simulation les retient ; le
+  journal dit qui a demandé (règle, utilisateur, scénario) ; une commande liée
+  introuvable échoue au journal sans rien casser. Une action **Mode nuit** est
+  ajoutée au foyer quand une commande lui est liée. « Alarme en service »
+  reste l'interrupteur du foyer : hors service, pas d'armement ni de mode nuit,
+  et la mise hors service ne désarme pas la centrale. Page Santé : ligne
+  « Alarmes liées ». Documentation : « Relier une vraie alarme », avec
+  l'exemple d'une centrale Ajax.
 - **Nouveau déclencheur « À heure fixe ».** Une liste de 1 à 24 heures
   (21:30, 22:00…) : la règle se présente à chacune, une fois par jour, et ses
   conditions décident. Rattrapage de cinq minutes si Jeedom a manqué la minute,

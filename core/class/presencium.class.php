@@ -179,6 +179,13 @@ class presencium extends eqLogic {
         }
     }
 
+    /* Le nom de la règle dont ce processus joue les actions en ce moment, ''
+     * sinon : posé par executerActions(), lu par origineOrdre(). C'est ce qui
+     * permet au journal de dire « armement demandé par la règle « J'arme en
+     * partant » » quand l'action de la règle est la commande Armer du foyer
+     * lui-même — le cœur, lui, ne transmet pas l'appelant à execute(). */
+    private static $_regleEnCours = '';
+
     /* Personne → foyers, mémorisé pour ce processus : voir foyersDe(). Même
      * règle du souligné que ci-dessus. */
     private static $_foyersParPersonne = null;
@@ -479,10 +486,14 @@ class presencium extends eqLogic {
         $listener->save();
     }
 
+    /* Les deux écouteurs possibles : celui de la source d'une personne, et
+     * celui de l'alarme liée d'un foyer (voir syncListenerAlarme()). */
     public function removeListener() {
-        $listener = listener::byClassAndFunction(__CLASS__, 'onSource', array('id' => (int) $this->getId()));
-        if (is_object($listener)) {
-            $listener->remove();
+        foreach (array('onSource', 'onAlarme') as $fonction) {
+            $listener = listener::byClassAndFunction(__CLASS__, $fonction, array('id' => (int) $this->getId()));
+            if (is_object($listener)) {
+                $listener->remove();
+            }
         }
     }
 
@@ -630,6 +641,14 @@ class presencium extends eqLogic {
             }
         }
         $this->setConfiguration('regles', $regles);
+
+        /* L'alarme liée : désactivée tant qu'on ne l'a pas demandé, ce qui
+         * laisse tout foyer existant exactement tel qu'il était. La
+         * normalisation vit dans presenciumRegles, sans Jeedom, pour être
+         * éprouvée hors ligne (tests/run.php). */
+        foreach (presenciumRegles::normaliserAlarme($this->getConfiguration()) as $cle => $valeur) {
+            $this->setConfiguration($cle, $valeur);
+        }
     }
 
     public function postSave() {
@@ -645,6 +664,11 @@ class presencium extends eqLogic {
 
         try {
             $this->syncListener();
+        } catch (Throwable $e) {
+            log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . $e->getMessage());
+        }
+        try {
+            $this->syncListenerAlarme();
         } catch (Throwable $e) {
             log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . $e->getMessage());
         }
@@ -782,7 +806,7 @@ class presencium extends eqLogic {
          * jusqu'au passage suivant du cron, et l'utilisateur appuie deux fois.
          */
         $liens = ($this->type() === self::TYPE_FOYER)
-               ? array('armer' => 'armee', 'desarmer' => 'armee',
+               ? array('armer' => 'armee', 'desarmer' => 'armee', 'mode_nuit' => 'armee',
                        'activer' => 'en_service', 'desactiver' => 'en_service',
                        'simulation_on' => 'simulation', 'simulation_off' => 'simulation')
                : array('forcer_present' => 'presence', 'forcer_absent' => 'presence');
@@ -838,7 +862,7 @@ class presencium extends eqLogic {
     }
 
     private function definitionsFoyer() {
-        return array(
+        $definitions = array(
             array('logicalId' => 'presence', 'name' => __('Présence', __FILE__),
                   'type' => 'info', 'subType' => 'binary', 'generic' => 'PRESENCE',
                   'visible' => 1, 'historized' => 1, 'icon' => 'fas fa-home'),
@@ -908,6 +932,35 @@ class presencium extends eqLogic {
                   'type' => 'action', 'subType' => 'other', 'generic' => '',
                   'visible' => 0, 'icon' => ''),
         );
+
+        /*
+         * « Mode nuit » n'existe que relié à une alarme qui en a un : le foyer
+         * seul n'en a pas, et un bouton qui ne peut que refuser n'a rien à
+         * faire sur la tuile d'un foyer qui n'a jamais été lié. Placé juste
+         * après « Désarmer », avec qui il se lit.
+         *
+         * Une fois créé, il reste — createCommands() ne supprime rien : un
+         * scénario ou une règle qui le nomme ne doit pas se retrouver pointé
+         * dans le vide parce qu'on a délié l'alarme un soir. Il refuse alors
+         * proprement, au journal (voir modeNuit()).
+         *
+         * Sans type générique : ALARM_SET_MODE attend une liste de modes et une
+         * info ALARM_MODE à côté, que le foyer ne porte pas ; un assistant
+         * vocal qui le verrait inventerait une alarme à modes qui n'existe pas.
+         */
+        if ($this->alarmeNuitDisponible()) {
+            $nuit = array('logicalId' => 'mode_nuit', 'name' => __('Mode nuit', __FILE__),
+                          'type' => 'action', 'subType' => 'other', 'generic' => '',
+                          'visible' => 1, 'icon' => 'fas fa-moon');
+            $rang = 0;
+            foreach ($definitions as $index => $definition) {
+                if ($definition['logicalId'] === 'desarmer') {
+                    $rang = $index + 1;
+                }
+            }
+            array_splice($definitions, $rang, 0, array($nuit));
+        }
+        return $definitions;
     }
 
     /* ================================================================= OUTILS */
@@ -983,11 +1036,17 @@ class presenciumCmd extends cmd {
             case 'desactiver':
                 $eqLogic->mettreEnService(false);
                 return;
+            /* L'origine n'est lue que pour ces trois-là : c'est le journal de
+             * l'alarme liée qui la montre, et la question « qui a désarmé ? »
+             * est celle qu'on se pose le lendemain. */
             case 'armer':
-                $eqLogic->armer(true);
+                $eqLogic->armer(true, presencium::origineOrdre($_options));
                 return;
             case 'desarmer':
-                $eqLogic->armer(false);
+                $eqLogic->armer(false, presencium::origineOrdre($_options));
+                return;
+            case 'mode_nuit':
+                $eqLogic->modeNuit(presencium::origineOrdre($_options));
                 return;
             case 'simulation_on':
                 $eqLogic->basculerSimulation(true);

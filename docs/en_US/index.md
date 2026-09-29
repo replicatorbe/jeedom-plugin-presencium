@@ -314,16 +314,18 @@ So the household carries the two states of an alarm itself:
 | **Alarm enabled** | The master switch. Disabled, nothing must arm. Logged. |
 | **Alarm armed** | The alarm is armed. Logged. |
 | **Arm** / **Disarm** | The two actions, visible on the tile. |
+| **Night mode** | Only with a linked alarm that has one (see below). |
 | **Enable** / **Disable** | The two actions of the master switch. Created hidden. |
 
-Those four commands carry the **core's alarm generic types**, which do still
-exist. Two concrete consequences: voice assistants, widgets and the Home view
-file them in the right place as of today; and the day a real alarm is installed,
-your rules will not have to change shape — they will drive its arming commands
-through their **actions**, and read its state through their **conditions**, just
-as they do today with the household's own.
+The first four carry the **core's alarm generic types**, which do still exist.
+Two concrete consequences: voice assistants, widgets and the Home view file
+them in the right place as of today; and the day a real alarm is installed,
+your rules do not have to change shape: the household is **linked** to it (see
+below), its actions then drive the control panel and "Alarm armed" follows its
+real state — generic types included, so Google Home, Matter and widgets see the
+real alarm's state.
 
-Both states are saved in the device configuration, and not only in the command:
+Without a linked alarm, both states are saved in the device configuration, and not only in the command:
 an alarm that disarmed itself on a cache flush would be worse than no alarm at
 all.
 
@@ -332,6 +334,108 @@ read. The good habit is to put the condition "Alarm enabled == 1" on every rule
 that arms. That is what the example further down does, and it is what lets you
 suspend the whole machinery with one click — a friend sleeping over, building
 work, a Saturday of going in and out twenty times.
+
+### Linking a real alarm
+
+The day a real alarm is installed, the household must not keep carrying a state
+of its own: "Alarm armed" would say 0 on an armed house, and everything that
+reads it — a widget, Google Home, a rule — would believe the house open. The
+household's **Linked alarm** section turns it into the **front** of the control
+panel:
+
+- **"Alarm armed" follows the real state.** A listener on the control panel's
+  state command carries it over immediately; the cron reads it again every
+  minute (in case the listener got lost), and so does saving the household.
+  Arming from the control panel's own app therefore shows on the household and
+  is written to its log ("The linked alarm is now armed"). As long as the state
+  cannot be read — command deleted, never collected — "Alarm armed" keeps its
+  last value: unknown never becomes "disarmed".
+- **Arm, Disarm and Night mode send orders.** Each executes the control panel
+  command you linked to it, and **nothing else**: the state is not written in
+  advance. If the panel refuses to arm (an open door, a faulty zone), "Alarm
+  armed" stays at 0, and that is the truth. The household log says which order
+  left, to which command, and **who asked for it**: the rule, the user from the
+  interface, the scenario — or "a Jeedom command" when Jeedom does not pass it
+  on (a plugin, the API).
+- **Simulation applies as everywhere else.** In simulation, the order is logged
+  with the command that would have been executed, and nothing is sent to the
+  panel.
+- **A linked command that cannot be found breaks nothing.** The order fails,
+  the household log carries a "failure" line saying so, and the scenario or rule
+  that asked carries on. The Health page lists what is missing ("Linked
+  alarms").
+- **"Alarm enabled" stays with the household.** It is still the master switch
+  of the household's arming: disabled, Arm and Night mode are refused (Disarm
+  always goes through). But disabling **does not disarm the control panel**:
+  suspending the rules for a weekend must not open a house you armed by hand
+  when leaving.
+- **Without a link, nothing changes.** The box is unticked by default, and an
+  existing household keeps exactly its former behaviour.
+
+| Setting | Configuration key | Role |
+|---|---|---|
+| **Link a real alarm** | `alarme_liee` | 0 or 1. Unticked by default. |
+| **Control panel armed state** | `alarme_etat` | The info command saying whether the panel is armed. |
+| **Armed when the value is** | `alarme_operateur`, `alarme_valeur` | The comparison, the same as rule conditions: `==` `1` by default. |
+| **Command for Arm** | `alarme_cmd_armer` | The action command executed by *Arm*. |
+| **Command for Disarm** | `alarme_cmd_desarmer` | The action command executed by *Disarm*. |
+| **Command for Night mode** | `alarme_cmd_nuit` | Optional. When chosen, it adds a **Night mode** action to the household. |
+
+The **Night mode** command only appears once a command is linked to it. It is
+never deleted afterwards — a scenario naming it must not end up pointing at
+nothing —: without a link, it refuses cleanly, in the log. It carries no
+generic type: `ALARM_SET_MODE` assumes a list of modes the household does not
+publish.
+
+#### This house's example: an Ajax control panel
+
+The Ajax control panel is exposed by the **ajaxsiabe** plugin, on its "hub"
+device:
+
+| Ajax command | Type | What it says or does |
+|---|---|---|
+| **Armée** (Armed) | binary info | 1 when fully armed, night or partial |
+| **Mode** | text info | Désarmé, Armé, Mode nuit, Armé partiel |
+| **Armer** / **Mode nuit** / **Désarmer** | actions | the orders, confirmed by the panel |
+
+The link takes four choices: state **[…][Hub][Armée]** `==` `1`, and the three
+actions. Written directly into the household configuration — the numbers are
+this installation's, replace them with yours:
+
+```json
+{
+    "alarme_liee": 1,
+    "alarme_etat": 6908,
+    "alarme_operateur": "==",
+    "alarme_valeur": "1",
+    "alarme_cmd_armer": 7002,
+    "alarme_cmd_desarmer": 7004,
+    "alarme_cmd_nuit": 7003
+}
+```
+
+The **Mode** info works too, with `!=` `Désarmé`: it is the same comparison as
+in a condition line, case-insensitive.
+
+#### What it changes for the rules
+
+Nothing mandatory: a rule driving the control panel directly keeps working. But
+it can now be written **with the household's commands**:
+
+| Instead of | Write |
+|---|---|
+| condition `[…][Hub][Armée]` `==` `0` | condition `[Home][Household][Alarm armed]` `==` `0` |
+| action `[…][Hub][Armer]` | action `[Home][Household][Arm]` |
+| action `[…][Hub][Désarmer]` | action `[Home][Household][Disarm]` |
+| action `[…][Hub][Mode nuit]` | action `[Home][Household][Night mode]` |
+
+Three things gain from it. Orders go through **the household's simulation** —
+leaving the household in simulation is enough to send nothing to the panel,
+without touching the rules. They go through **"Alarm enabled"** — disabled, no
+rule arms, even those that forgot the condition. And the household log says
+**which rule** asked for what, where the panel's own log would only see
+"Jeedom". Changing control panels one day will only mean redoing the link: the
+rules stay as they are.
 
 ## The rules
 
@@ -743,6 +847,11 @@ watching a film.
 | | `[Living room][Lamps][State]` `==` `0` (one line per lamp) |
 | **Action** | `[Home][Alarm][Night mode]` |
 
+With a [linked alarm](#linking-a-real-alarm), the two alarm lines are written
+with the household: condition `[Home][Household][Alarm armed]` `==` `0`, action
+`[Home][Household][Night mode]` — and night mode then goes through the
+household's simulation and "Alarm enabled".
+
 What each line does:
 
 - **Six times rather than one.** Nobody goes to bed at the same time every
@@ -829,8 +938,8 @@ by naming another source.
 
 **It is not an alarm.** No siren, no exit delay, no code to type, no list of
 watched detectors. It carries two states — enabled, armed — and the actions that
-go with them, until a real alarm takes over; it will then be able to drive it
-through its actions and read it through its conditions.
+go with them; when a real alarm is there, it links to it, passes its orders on
+and follows its state.
 
 **It does not do geolocation.** No radius around the house, no phone tracked
 outdoors. It looks at what your sensors see, at your place.

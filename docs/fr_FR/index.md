@@ -326,25 +326,129 @@ Le foyer porte donc lui-même les deux états d'une alarme :
 | **Alarme en service** | L'interrupteur général. Hors service, plus rien ne doit s'armer. Historisée. |
 | **Alarme armée** | L'alarme est armée. Historisée. |
 | **Armer** / **Désarmer** | Les deux actions, visibles sur la tuile. |
+| **Mode nuit** | Seulement avec une alarme liée qui en a un (voir plus bas). |
 | **Mettre en service** / **Mettre hors service** | Les deux actions de l'interrupteur général. Créées masquées. |
 
-Ces quatre commandes portent les **types génériques d'alarme du cœur**, qui,
+Les quatre premières portent les **types génériques d'alarme du cœur**, qui,
 eux, existent toujours. Deux conséquences concrètes : les assistants vocaux, les
 widgets et la vue Maison les rangent au bon endroit dès aujourd'hui ; et le jour
-où une vraie alarme s'installera, vos règles n'auront pas à changer de forme —
-elles piloteront ses commandes d'armement par leurs **actions**, et liront son
-état par leurs **conditions**, comme elles le font aujourd'hui avec celles du
-foyer.
+où une vraie alarme s'installe, vos règles n'ont pas à changer de forme : le
+foyer se **relie** à elle (voir plus bas), ses actions pilotent alors la
+centrale et « Alarme armée » suit son état réel — types génériques compris,
+si bien que Google Home, Matter et les widgets voient l'état de la vraie
+alarme.
 
-Les deux états sont enregistrés dans la configuration de l'équipement, et pas
-seulement dans la commande : une alarme qui se désarmerait toute seule à un
-vidage de cache serait pire que pas d'alarme du tout.
+Sans alarme liée, les deux états sont enregistrés dans la configuration de
+l'équipement, et pas seulement dans la commande : une alarme qui se
+désarmerait toute seule à un vidage de cache serait pire que pas d'alarme du
+tout.
 
 **« En service » ne s'impose pas tout seul** : c'est un état que vous pilotez et
 que vos règles lisent. La bonne habitude est de poser la condition « Alarme en
 service == 1 » sur toute règle qui arme. C'est ce que fait l'exemple plus bas,
 et c'est ce qui permet de suspendre toute la mécanique d'un clic — un ami qui
 dort là, des travaux, un samedi où l'on entre et sort vingt fois.
+
+### Relier une vraie alarme
+
+Le jour où une vraie alarme s'installe, le foyer ne doit pas continuer à porter
+un état à lui : « Alarme armée » dirait 0 sur une maison armée, et tout ce qui
+la lit — un widget, Google Home, une règle — croirait la maison ouverte. La
+section **Alarme liée** de la fiche du foyer fait de lui la **façade** de la
+centrale :
+
+- **« Alarme armée » suit l'état réel.** Un écouteur sur la commande d'état de
+  la centrale la reporte immédiatement ; le cron la relit chaque minute (au cas
+  où l'écouteur se serait perdu) et l'enregistrement du foyer aussi. Un
+  armement fait depuis l'application de la centrale se voit donc sur le foyer,
+  et s'écrit dans son journal (« L'alarme liée est maintenant armée »). Tant
+  que l'état ne se lit pas — commande supprimée, jamais collectée —, « Alarme
+  armée » garde sa dernière valeur : l'inconnu ne devient jamais « désarmée ».
+- **Armer, Désarmer et Mode nuit envoient des ordres.** Chacune exécute la
+  commande de la centrale que vous lui avez liée, et **rien d'autre** : l'état
+  n'est pas écrit d'avance. Si la centrale refuse d'armer (une porte ouverte,
+  une zone en défaut), « Alarme armée » reste à 0, et c'est la vérité. Le
+  journal du foyer dit quel ordre est parti, vers quelle commande, et **qui
+  l'a demandé** : la règle, l'utilisateur depuis l'interface, le scénario — ou
+  « une commande Jeedom » quand Jeedom ne le transmet pas (un plugin, l'API).
+- **La simulation s'applique comme partout.** En simulation, l'ordre est écrit
+  au journal avec la commande qui aurait été exécutée, et rien n'est envoyé à la
+  centrale.
+- **Une commande liée introuvable ne casse rien.** L'ordre échoue, le journal
+  du foyer porte une ligne « échec » qui le dit, le scénario ou la règle qui
+  l'a demandé continue. La page Santé liste ce qui manque (« Alarmes liées »).
+- **« Alarme en service » reste au foyer.** C'est toujours l'interrupteur
+  général des armements du foyer : hors service, Armer et Mode nuit sont
+  refusés (Désarmer passe toujours). Mais la mise hors service **ne désarme
+  pas la centrale** : suspendre les règles pour un week-end ne doit pas ouvrir
+  une maison qu'on a armée à la main en partant.
+- **Sans liaison, rien ne change.** La case est décochée par défaut, et un foyer
+  existant garde exactement son comportement d'avant.
+
+| Réglage | Clé de configuration | Rôle |
+|---|---|---|
+| **Relier une vraie alarme** | `alarme_liee` | 0 ou 1. Décochée par défaut. |
+| **État armé de la centrale** | `alarme_etat` | La commande info qui dit si la centrale est armée. |
+| **Armée quand la valeur est** | `alarme_operateur`, `alarme_valeur` | La comparaison, celle des conditions des règles : `==` `1` par défaut. |
+| **Commande pour Armer** | `alarme_cmd_armer` | La commande action exécutée par *Armer*. |
+| **Commande pour Désarmer** | `alarme_cmd_desarmer` | La commande action exécutée par *Désarmer*. |
+| **Commande pour Mode nuit** | `alarme_cmd_nuit` | Facultative. Choisie, elle ajoute au foyer une action **Mode nuit**. |
+
+La commande **Mode nuit** n'apparaît qu'une fois une commande liée pour elle.
+Elle n'est jamais supprimée ensuite — un scénario qui la nomme ne doit pas se
+retrouver pointé dans le vide — : sans liaison, elle refuse proprement, au
+journal. Elle ne porte pas de type générique : `ALARM_SET_MODE` suppose une
+liste de modes que le foyer ne publie pas.
+
+#### L'exemple de cette maison : une centrale Ajax
+
+La centrale Ajax est exposée par le plugin **ajaxsiabe**, sur son équipement
+« hub » :
+
+| Commande Ajax | Type | Ce qu'elle dit ou fait |
+|---|---|---|
+| **Armée** | info binaire | 1 si armé total, nuit ou partiel |
+| **Mode** | info texte | Désarmé, Armé, Mode nuit, Armé partiel |
+| **Armer** / **Mode nuit** / **Désarmer** | actions | les ordres, confirmés par la centrale |
+
+La liaison tient en quatre choix : état **[…][Hub][Armée]** `==` `1`, et les
+trois actions. Écrite directement dans la configuration du foyer — les numéros
+sont ceux de cette installation, remplacez-les par les vôtres :
+
+```json
+{
+    "alarme_liee": 1,
+    "alarme_etat": 6908,
+    "alarme_operateur": "==",
+    "alarme_valeur": "1",
+    "alarme_cmd_armer": 7002,
+    "alarme_cmd_desarmer": 7004,
+    "alarme_cmd_nuit": 7003
+}
+```
+
+L'info **Mode** convient aussi, avec `!=` `Désarmé` : c'est la même
+comparaison que dans une ligne de condition, insensible à la casse.
+
+#### Ce que ça change pour les règles
+
+Rien d'obligatoire : une règle qui commande directement la centrale continue de
+marcher. Mais elle peut désormais s'écrire **avec les commandes du foyer** :
+
+| Au lieu de | Écrire |
+|---|---|
+| condition `[…][Hub][Armée]` `==` `0` | condition `[Maison][Foyer][Alarme armée]` `==` `0` |
+| action `[…][Hub][Armer]` | action `[Maison][Foyer][Armer]` |
+| action `[…][Hub][Désarmer]` | action `[Maison][Foyer][Désarmer]` |
+| action `[…][Hub][Mode nuit]` | action `[Maison][Foyer][Mode nuit]` |
+
+Trois choses y gagnent. Les ordres passent par **la simulation du foyer** —
+laisser le foyer en simulation suffit à ne rien envoyer à la centrale, sans
+toucher aux règles. Ils passent par **« Alarme en service »** — hors service,
+aucune règle n'arme, même celles qui auraient oublié la condition. Et le
+journal du foyer dit **quelle règle** a demandé quoi, là où le journal de la
+centrale ne verrait que « Jeedom ». Changer un jour de centrale ne demandera
+plus que de refaire la liaison : les règles, elles, ne bougent pas.
 
 ## Les règles
 
@@ -777,6 +881,11 @@ sur quelqu'un qui regarde encore un film.
 | | `[Salon][Lampes][Etat]` `==` `0` (une ligne par lampe) |
 | **Action** | `[Maison][Alarme][Mode nuit]` |
 
+Avec une [alarme liée](#relier-une-vraie-alarme), les deux lignes de l'alarme
+s'écrivent avec le foyer : condition `[Maison][Foyer][Alarme armée]` `==` `0`,
+action `[Maison][Foyer][Mode nuit]` — et le mode nuit passe alors par la
+simulation et par « Alarme en service » du foyer.
+
 Ce que chaque ligne fait :
 
 - **Six heures plutôt qu'une.** On ne se couche pas tous les soirs à la même
@@ -868,9 +977,8 @@ reconstruire, en désignant une autre source.
 
 **Ce n'est pas une alarme.** Pas de sirène, pas de temporisation de sortie, pas
 de code à taper, pas de liste de détecteurs surveillés. Il porte deux états —
-en service, armée — et les actions qui vont avec, en attendant qu'une vraie
-alarme prenne la place ; il saura alors la piloter par ses actions et la lire
-par ses conditions.
+en service, armée — et les actions qui vont avec ; quand une vraie alarme est
+là, il se relie à elle, lui transmet ses ordres et en suit l'état.
 
 **Il ne fait pas de géolocalisation.** Pas de rayon autour de la maison, pas de
 téléphone suivi dehors. Il regarde ce que voient vos capteurs, chez vous.

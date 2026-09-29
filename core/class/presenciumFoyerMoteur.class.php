@@ -332,8 +332,9 @@ trait presenciumFoyerMoteur {
      * Repose les commandes d'information du foyer.
      *
      * `en_service` et `armee` sont republiés depuis la CONFIGURATION à chaque
-     * passage, et c'est le point : la commande vit dans le cache du cœur, la
-     * configuration vit en base. Un vidage de cache remettrait sinon une alarme
+     * passage (sauf `armee` d'un foyer lié, relu sur la centrale), et c'est
+     * le point : la commande vit dans le cache du cœur, la configuration vit
+     * en base. Un vidage de cache remettrait sinon une alarme
      * armée à « désarmée » sans que personne ne l'ait demandé, et la maison
      * serait ouverte jusqu'au prochain geste humain.
      */
@@ -379,7 +380,15 @@ trait presenciumFoyerMoteur {
         $this->checkAndUpdateCmd('premier', $etats['premier']);
         $this->checkAndUpdateCmd('dernier', $etats['dernier']);
         $this->checkAndUpdateCmd('en_service', ($this->getConfiguration('etat_en_service', 0) == 1) ? 1 : 0);
-        $this->checkAndUpdateCmd('armee', ($this->getConfiguration('etat_armee', 0) == 1) ? 1 : 0);
+        /* Liée à une vraie alarme, « armée » est l'état de la centrale, relu
+         * ici à chaque passage : c'est le filet de l'écouteur (onAlarme()),
+         * qui se perd sans rien dire. Illisible, il garde sa dernière valeur
+         * plutôt que de retomber sur la clé locale. */
+        if ($this->alarmeLiee()) {
+            $this->alarmeSynchroniser();
+        } else {
+            $this->checkAndUpdateCmd('armee', ($this->getConfiguration('etat_armee', 0) == 1) ? 1 : 0);
+        }
         $this->checkAndUpdateCmd('simulation', $this->enSimulation() ? 1 : 0);
 
         return $etats;

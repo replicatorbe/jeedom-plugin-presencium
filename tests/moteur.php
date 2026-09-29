@@ -22,6 +22,9 @@
  * jamais agir deux fois. Et une règle « À heure fixe » doit tomber à son
  * heure, une fois, sans rattraper la veille ni ce qui précède sa création. Chacun de ces trois manquements se paie d'une porte
  * restée ouverte ou verrouillée à contretemps, sans une erreur nulle part.
+ *
+ * L'alarme liée à une vraie centrale (section 11) passe par le même
+ * procédé : le trait presenciumAlarme réel, une centrale en doublure.
  */
 
 date_default_timezone_set('Europe/Brussels');
@@ -68,6 +71,7 @@ class cmd {
 require_once __DIR__ . '/../core/class/presenciumRegles.class.php';
 require_once __DIR__ . '/../core/class/presenciumExecution.class.php';
 require_once __DIR__ . '/../core/class/presenciumFoyerMoteur.class.php';
+require_once __DIR__ . '/../core/class/presenciumAlarme.class.php';
 
 /*
  * Un foyer d'essai : les deux traits du moteur, et à la place de ce qui touche
@@ -86,6 +90,8 @@ class foyerEssai {
     const ACTIONS_BLOQUANTES = array('wait', 'sleep', 'ask');
     const ACTIONS_HORS_ESSAI = array('wait', 'sleep', 'ask', 'jeedom_poweroff', 'jeedom_reboot');
     public static $_profondeurFoyer = 0;
+    /* Lu par executerActions() : voir presencium::$_regleEnCours. */
+    public static $_regleEnCours = '';
 
     public $etat = array('attentes' => array(), 'repos' => array(), 'temporel' => array(), 'foyer' => array());
     public $journal = array();
@@ -656,6 +662,373 @@ $muette = regleNuit(array('heures_fixes' => array()));
 $foyer = foyerAvec($muette);
 nuitDe($foyer, '2026-09-29 21:00:00', '2026-09-30 01:00:00', $present);
 verifie('sans heure : jamais rien', count($foyer->journal), 0);
+
+/* ----------------------------------------------------------------- 11 ---
+ * L'alarme liée, par le vrai trait presenciumAlarme : armer(), modeNuit(),
+ * alarmeSynchroniser(), mettreEnService(). Une vraie centrale ne se laisse
+ * pas éprouver à la demande — on n'arme pas la maison pour un test —, et
+ * c'est justement pour cela que ce qui suit doit être vrai sans elle :
+ *
+ *  - l'état suit la centrale, et seulement elle ;
+ *  - un ordre part vers la commande liée, jamais vers la bascule locale, et
+ *    l'état n'est pas écrit d'avance ;
+ *  - la simulation retient l'ordre ;
+ *  - une commande liée disparue échoue au journal, sans exception ;
+ *  - un foyer non lié se comporte exactement comme avant. */
+echo "\nAlarme liée\n";
+
+/* Une commande action de la centrale : elle compte ses exécutions, et peut
+ * lever comme le ferait une passerelle injoignable. */
+class commandeActionEssai {
+    public $executions = 0;
+    public $leve = '';
+    private $_nom;
+    public function __construct($_nom) {
+        $this->_nom = $_nom;
+    }
+    public function getType() {
+        return 'action';
+    }
+    public function execCmd($_options = null) {
+        if ($this->leve !== '') {
+            throw new Exception($this->leve);
+        }
+        $this->executions++;
+        return null;
+    }
+    public function getHumanName() {
+        return $this->_nom;
+    }
+}
+
+/* La commande info publiée par le foyer (« Alarme armée ») : relit ce que
+ * checkAndUpdateCmd() y a posé, comme le cache du cœur. */
+class infoPublieeEssai {
+    private $_foyer;
+    private $_logicalId;
+    public function __construct($_foyer, $_logicalId) {
+        $this->_foyer = $_foyer;
+        $this->_logicalId = $_logicalId;
+    }
+    public function execCmd() {
+        return isset($this->_foyer->publie[$this->_logicalId]) ? $this->_foyer->publie[$this->_logicalId] : null;
+    }
+}
+
+/* Un foyer d'essai pour l'alarme : le trait réel, et à la place de la base
+ * et du cache, des tableaux. getId() rend 0 : objetFrais() rend alors l'objet
+ * lui-même, sans relecture — il n'y a pas de base à relire. Le moteur de
+ * règles est là aussi, pour éprouver le chemin « une règle exécute Armer du
+ * foyer » de bout en bout. */
+class alarmeEssai {
+    use presenciumExecution, presenciumAlarme;
+
+    const TYPE_FOYER = 'foyer';
+    const TYPE_PERSONNE = 'personne';
+    const CACHE_SUITE = 'presencium::suite::';
+    const MOTS_CLES_ACTION = array('wait', 'sleep', 'ask', 'stop', 'scenario', 'variable');
+    const ACTIONS_BLOQUANTES = array('wait', 'sleep', 'ask');
+    const ACTIONS_HORS_ESSAI = array('wait', 'sleep', 'ask', 'jeedom_poweroff', 'jeedom_reboot');
+    public static $_profondeurFoyer = 0;
+    public static $_regleEnCours = '';
+    public static $reglages = array('simulation' => 0);
+
+    public $configuration = array('type' => 'foyer', 'etat_en_service' => 1, 'etat_armee' => 0, 'simulation' => 0);
+    public $journal = array();
+    public $publie = array();
+    public $sauvegardes = 0;
+    public $etat = array('attentes' => array(), 'repos' => array(), 'temporel' => array(), 'foyer' => array());
+
+    public function type() {
+        return self::TYPE_FOYER;
+    }
+    public function getId() {
+        return 0;
+    }
+    public function getIsEnable() {
+        return 1;
+    }
+    public function getHumanName() {
+        return '[Maison][Foyer]';
+    }
+    public function getConfiguration($_cle = null, $_defaut = null) {
+        if ($_cle === null) {
+            return $this->configuration;
+        }
+        return isset($this->configuration[$_cle]) ? $this->configuration[$_cle] : $_defaut;
+    }
+    public function setConfiguration($_cle, $_valeur) {
+        $this->configuration[$_cle] = $_valeur;
+    }
+    public function save($_direct = false) {
+        $this->sauvegardes++;
+    }
+    public static function reglageGlobal($_cle, $_defaut) {
+        return isset(self::$reglages[$_cle]) ? self::$reglages[$_cle] : $_defaut;
+    }
+    public function checkAndUpdateCmd($_logicalId, $_valeur) {
+        $this->publie[$_logicalId] = $_valeur;
+    }
+    public function getCmd($_type, $_logicalId) {
+        return new infoPublieeEssai($this, $_logicalId);
+    }
+    public function journalAjouter($_entree) {
+        $this->journal[] = $_entree;
+    }
+    public function detailPresence($_maintenant, $_instantane = null) {
+        return 'présences';
+    }
+    public function instantane($_maintenant = null) {
+        return instantane(array(1), 2);
+    }
+    public function nomsPersonnes() {
+        return array();
+    }
+    public function etatValeur($_section, $_cle = null, $_defaut = null) {
+        return $_defaut;
+    }
+    public function etatPoser($_section, $_cle, $_valeur) {
+        return true;
+    }
+}
+
+/* La centrale de cette installation, telle que le plugin ajaxsiabe l'expose :
+ * « Armée » (binaire, 1 en total, nuit ou partiel), « Mode » (texte), et les
+ * trois ordres. Les numéros sont ceux de la documentation. */
+$centraleArmee = new commandeEssai('[Maison][Hub Ajax][Armée]', 0);
+$centraleMode = new commandeEssai('[Maison][Hub Ajax][Mode]', 'Désarmé');
+$ordreArmer = new commandeActionEssai('[Maison][Hub Ajax][Armer]');
+$ordreNuit = new commandeActionEssai('[Maison][Hub Ajax][Mode nuit]');
+$ordreDesarmer = new commandeActionEssai('[Maison][Hub Ajax][Désarmer]');
+cmd::$registre[6908] = $centraleArmee;
+cmd::$registre[6907] = $centraleMode;
+cmd::$registre[7002] = $ordreArmer;
+cmd::$registre[7003] = $ordreNuit;
+cmd::$registre[7004] = $ordreDesarmer;
+
+function foyerLie($_reglages = array()) {
+    $foyer = new alarmeEssai();
+    foreach (presenciumRegles::normaliserAlarme(array_merge(array(
+        'alarme_liee' => 1, 'alarme_etat' => 6908,
+        'alarme_cmd_armer' => 7002, 'alarme_cmd_desarmer' => 7004, 'alarme_cmd_nuit' => 7003,
+    ), $_reglages)) as $cle => $valeur) {
+        $foyer->configuration[$cle] = $valeur;
+    }
+    return $foyer;
+}
+function executionsCentrale() {
+    global $ordreArmer, $ordreNuit, $ordreDesarmer;
+    return $ordreArmer->executions . '/' . $ordreNuit->executions . '/' . $ordreDesarmer->executions;
+}
+function remettreCentrale() {
+    global $ordreArmer, $ordreNuit, $ordreDesarmer;
+    foreach (array($ordreArmer, $ordreNuit, $ordreDesarmer) as $ordre) {
+        $ordre->executions = 0;
+        $ordre->leve = '';
+    }
+}
+
+/* ---- non liée : exactement comme avant */
+$local = new alarmeEssai();
+verifie('non lié : alarmeLiee() est faux', $local->alarmeLiee(), false);
+verifie('non lié : armer rend vrai', $local->armer(true, 'admin depuis l\'interface'), true);
+verifie('non lié : la clé locale bascule', $local->configuration['etat_armee'], 1);
+verifie('non lié : « armée » publiée à 1', $local->publie['armee'], 1);
+verifie('non lié : écrit en base', $local->sauvegardes, 1);
+verifie('non lié : aucune commande de la centrale touchée', executionsCentrale(), '0/0/0');
+verifie('non lié : la synchronisation ne fait rien', $local->alarmeSynchroniser(), null);
+verifie('non lié : le détail du journal est celui d\'avant', end($local->journal)['detail'], 'Armement — présences');
+$local->armer(false);
+verifie('non lié : désarmer rebascule', $local->publie['armee'], 0);
+$local->configuration['etat_en_service'] = 0;
+verifie('non lié : hors service, armer est refusé', $local->armer(true), false);
+verifie('… et reste désarmée', $local->configuration['etat_armee'], 0);
+$avant = count($local->journal);
+verifie('non lié : Mode nuit refusé', $local->modeNuit('test'), false);
+verifie('… au journal, en échec', end($local->journal)['verdict'], 'echec');
+verifieVrai('… qui dit pourquoi', strpos(end($local->journal)['detail'], 'relié à aucune alarme') !== false);
+verifie('non lié : pas de commande Mode nuit', $local->alarmeNuitDisponible(), false);
+
+/* ---- l'état suit la centrale */
+$foyer = foyerLie();
+$centraleArmee->valeur = 0;
+verifie('lié : première lecture publiée', $foyer->alarmeSynchroniser(), 0);
+verifie('… sans ligne au journal (découverte, pas changement)', count($foyer->journal), 0);
+$centraleArmee->valeur = 1;
+verifie('armée depuis l\'application : suivie', $foyer->alarmeSynchroniser(), 1);
+verifie('… publiée sur « Alarme armée »', $foyer->publie['armee'], 1);
+verifieVrai('… et journalisée avec la valeur lue',
+            strpos(end($foyer->journal)['detail'], 'maintenant armée ([Maison][Hub Ajax][Armée] = 1)') !== false);
+$nombre = count($foyer->journal);
+$foyer->alarmeSynchroniser();
+verifie('relue sans changement : rien de plus au journal', count($foyer->journal), $nombre);
+verifie('la clé locale n\'est jamais écrite par la synchronisation', $foyer->configuration['etat_armee'], 0);
+$centraleArmee->valeur = null;
+verifie('valeur inconnue : pas de publication', $foyer->alarmeSynchroniser(), null);
+verifie('… « armée » garde sa dernière valeur, jamais 0 par défaut', $foyer->publie['armee'], 1);
+$centraleArmee->valeur = 0;
+$foyer->alarmeSynchroniser();
+verifie('désarmée à la centrale : suivie', $foyer->publie['armee'], 0);
+
+/* Un état texte, lu comme une ligne de condition. */
+$texte = foyerLie(array('alarme_etat' => '#6907#', 'alarme_operateur' => '!=', 'alarme_valeur' => 'Désarmé'));
+verifie('état texte : identifiant sans dièses', $texte->configuration['alarme_etat'], 6907);
+foreach (array('Désarmé' => 0, 'Armé' => 1, 'Mode nuit' => 1, 'Armé partiel' => 1, 'désarmé' => 0) as $mode => $attendu) {
+    $centraleMode->valeur = $mode;
+    verifie('« Mode » = ' . $mode . ' → armée ' . $attendu, $texte->alarmeSynchroniser(), $attendu);
+}
+
+/* Une commande d'état disparue : rien ne lève, rien ne bouge. */
+$perdu = foyerLie(array('alarme_etat' => 99999));
+$perdu->publie['armee'] = 1;
+verifie('état introuvable : null', $perdu->alarmeSynchroniser(), null);
+verifie('… « armée » inchangée', $perdu->publie['armee'], 1);
+verifieVrai('… et la page Santé le dit',
+            strpos(implode(' ; ', $perdu->alarmeProblemes()), 'introuvable') !== false);
+/* Une commande action choisie comme état n'est jamais exécutée. */
+$inverse = foyerLie(array('alarme_etat' => 7002));
+remettreCentrale();
+verifie('action choisie comme état : illisible', $inverse->alarmeSynchroniser(), null);
+verifie('… et jamais appuyée', executionsCentrale(), '0/0/0');
+
+/* ---- un ordre part vers la centrale, et l'état attend */
+remettreCentrale();
+$foyer = foyerLie();
+$centraleArmee->valeur = 0;
+$foyer->alarmeSynchroniser();
+verifie('Armer lié : l\'ordre part', $foyer->armer(true, 'la règle « J\'arme en partant »'), true);
+verifie('… vers la commande Armer de la centrale, une fois', executionsCentrale(), '1/0/0');
+verifie('… l\'état n\'est pas écrit d\'avance', $foyer->publie['armee'], 0);
+verifie('… ni la clé locale', $foyer->configuration['etat_armee'], 0);
+verifie('… rien d\'écrit en base', $foyer->sauvegardes, 0);
+$entree = end($foyer->journal);
+verifie('… journal : déclenchée', $entree['verdict'], 'declenchee');
+verifieVrai('… qui nomme la commande exécutée', strpos($entree['detail'], '[Maison][Hub Ajax][Armer] exécutée') !== false);
+verifieVrai('… et qui l\'a demandé', strpos($entree['detail'], 'demandé par la règle « J\'arme en partant »') !== false);
+$centraleArmee->valeur = 1;
+$foyer->alarmeSynchroniser();
+verifie('la centrale confirme : l\'état suit', $foyer->publie['armee'], 1);
+$foyer->armer(false, 'admin depuis l\'interface');
+verifie('Désarmer lié : la commande Désarmer', executionsCentrale(), '1/0/1');
+$foyer->modeNuit('le scénario [Maison][Nuit]');
+verifie('Mode nuit lié : la commande Mode nuit', executionsCentrale(), '1/1/1');
+verifieVrai('… journalisé avec son origine', strpos(end($foyer->journal)['detail'], 'demandé par le scénario [Maison][Nuit]') !== false);
+verifie('Mode nuit disponible quand la commande est liée', $foyer->alarmeNuitDisponible(), true);
+
+/* Hors service : ni armement ni mode nuit, le désarmement passe. */
+remettreCentrale();
+$foyer->configuration['etat_en_service'] = 0;
+verifie('hors service : armer refusé', $foyer->armer(true), false);
+verifie('hors service : mode nuit refusé', $foyer->modeNuit(), false);
+verifie('… rien n\'est parti', executionsCentrale(), '0/0/0');
+verifieVrai('… le journal dit « hors service »', strpos(end($foyer->journal)['detail'], 'hors service') !== false);
+$foyer->armer(false);
+verifie('hors service : désarmer passe toujours', executionsCentrale(), '0/0/1');
+$foyer->configuration['etat_en_service'] = 1;
+
+/* Mise hors service : la centrale n'est pas désarmée. */
+remettreCentrale();
+$centraleArmee->valeur = 1;
+$foyer->alarmeSynchroniser();
+$foyer->mettreEnService(false);
+verifie('mise hors service liée : aucun ordre à la centrale', executionsCentrale(), '0/0/0');
+verifie('… « armée » reste celle de la centrale', $foyer->publie['armee'], 1);
+verifie('… « en service » publiée à 0', $foyer->publie['en_service'], 0);
+verifieVrai('… le journal le précise', strpos(end($foyer->journal)['detail'], 'pas désarmée pour autant') !== false);
+$foyer->mettreEnService(true);
+
+/* ---- la simulation retient l'ordre */
+remettreCentrale();
+$foyer->configuration['simulation'] = 1;
+verifie('simulation du foyer : armer', $foyer->armer(true, 'admin depuis l\'interface'), true);
+verifie('… rien n\'est exécuté', executionsCentrale(), '0/0/0');
+$entree = end($foyer->journal);
+verifie('… journal marqué simulation', $entree['simulation'], true);
+verifieVrai('… qui dit quelle commande aurait été exécutée',
+            strpos($entree['detail'], '[Maison][Hub Ajax][Armer] n\'a pas été exécutée') !== false);
+$foyer->modeNuit();
+$foyer->armer(false);
+verifie('… ni mode nuit ni désarmement', executionsCentrale(), '0/0/0');
+$foyer->configuration['simulation'] = 0;
+alarmeEssai::$reglages['simulation'] = 1;
+$foyer->armer(true);
+verifie('simulation globale : rien non plus', executionsCentrale(), '0/0/0');
+alarmeEssai::$reglages['simulation'] = 0;
+
+/* ---- une commande liée introuvable, ou qui lève */
+remettreCentrale();
+$casse = foyerLie(array('alarme_cmd_armer' => 88888, 'alarme_cmd_nuit' => 0));
+$resultat = null;
+try {
+    $resultat = $casse->armer(true, 'test');
+    $leve = false;
+} catch (Throwable $e) {
+    $leve = true;
+}
+verifie('commande Armer introuvable : aucune exception', $leve, false);
+verifie('… rend faux', $resultat, false);
+$entree = end($casse->journal);
+verifie('… journal en échec', $entree['verdict'], 'echec');
+verifieVrai('… qui nomme la commande manquante', strpos($entree['detail'], '#88888# est introuvable') !== false);
+verifie('… et ne retombe pas sur la bascule locale', $casse->configuration['etat_armee'], 0);
+verifie('sans commande nuit liée : Mode nuit refusé', $casse->modeNuit(), false);
+verifieVrai('… au journal', strpos(end($casse->journal)['detail'], 'aucune commande') !== false);
+verifie('… et pas proposé', $casse->alarmeNuitDisponible(), false);
+$ordreArmer->leve = 'Hub injoignable';
+$foyer = foyerLie();
+verifie('commande qui lève : rend faux', $foyer->armer(true), false);
+verifieVrai('… le message de la passerelle au journal', strpos(end($foyer->journal)['detail'], 'Hub injoignable') !== false);
+$ordreArmer->leve = '';
+$mauvais = foyerLie(array('alarme_cmd_armer' => 6908));
+verifie('une info choisie comme ordre : refusée', $mauvais->armer(true), false);
+verifieVrai('… « n\'est pas une commande action »', strpos(end($mauvais->journal)['detail'], 'pas une commande action') !== false);
+verifie('problèmes d\'une liaison complète : aucun', foyerLie()->alarmeProblemes(), array());
+
+/* ---- l'origine d'un ordre */
+alarmeEssai::$_regleEnCours = '';
+verifie('origine : l\'interface', alarmeEssai::origineOrdre(array('user_login' => 'admin')), 'admin depuis l\'interface');
+verifie('origine : inconnue, et dit comme telle', alarmeEssai::origineOrdre(array()),
+        'une commande Jeedom (scénario, plugin ou API)');
+
+/* De bout en bout : une règle dont l'action est la commande Armer du foyer.
+ * La doublure fait ce que fait presenciumCmd::execute(). */
+class commandeArmerFoyerEssai {
+    public $foyer;
+    public function getType() {
+        return 'action';
+    }
+    public function getHumanName() {
+        return '[Maison][Foyer][Armer]';
+    }
+    public function getSubType() {
+        return 'other';
+    }
+    public function execCmd($_options = null) {
+        return $this->foyer->armer(true, alarmeEssai::origineOrdre(is_array($_options) ? $_options : array()));
+    }
+}
+remettreCentrale();
+$foyer = foyerLie();
+$armerFoyer = new commandeArmerFoyerEssai();
+$armerFoyer->foyer = $foyer;
+cmd::$registre[5441] = $armerFoyer;
+$regleArmer = presenciumRegles::normaliserRegle(array(
+    'id' => 'r-armer', 'nom' => 'J\'arme en partant', 'actif' => 1, 'declencheur' => 'depart_dernier',
+    'simulation' => 0,
+    'actions' => array(array('cmd' => '#[Maison][Foyer][Armer]#', 'cmd_id' => 5441)),
+));
+$rendu = $foyer->executerRegle($regleArmer, $t0, array('instantane' => $vide), true);
+verifie('règle → Armer du foyer → centrale', executionsCentrale(), '1/0/0');
+verifie('… l\'action de la règle est exécutée', $rendu['actions'][0]['resultat'], 'exécutée');
+$ordre = null;
+foreach ($foyer->journal as $entree) {
+    if ($entree['genre'] === 'alarme') {
+        $ordre = $entree;
+    }
+}
+verifieVrai('… et le journal de l\'alarme nomme la règle',
+            strpos($ordre['detail'], 'demandé par la règle « J\'arme en partant »') !== false);
+verifie('… l\'origine ne reste pas collée après la règle', alarmeEssai::$_regleEnCours, '');
 
 /* ---------------------------------------------------------------- BILAN --- */
 echo "\n";

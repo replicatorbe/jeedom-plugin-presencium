@@ -469,6 +469,87 @@ function presenciumVignette($_eqLogic, $_icone, $_actif, $_etat, $_detail, $_bad
                             </fieldset>
 
                             <fieldset>
+                                <legend><i class="fas fa-shield-alt"></i> {{Alarme liée}}</legend>
+                                <div class="form-group">
+                                    <label class="col-sm-4 control-label">
+                                        {{Relier une vraie alarme}}
+                                        <sup><i class="fas fa-question-circle" title="{{Sans liaison, le foyer porte lui-même l'état « Alarme armée », que ses actions Armer et Désarmer basculent. Relié, il devient la façade d'une vraie centrale : Armer, Désarmer et Mode nuit lui envoient des ordres, et « Alarme armée » suit son état réel. « Alarme en service » reste l'interrupteur du foyer.}}"></i></sup>
+                                    </label>
+                                    <div class="col-sm-8">
+                                        <label class="checkbox-inline" style="padding-left:20px;">
+                                            <input type="checkbox" class="eqLogicAttr" data-l1key="configuration" data-l2key="alarme_liee" id="in_presenciumAlarmeLiee">
+                                            <b>{{Les actions d'alarme du foyer pilotent la centrale, son état suit la centrale}}</b>
+                                        </label>
+                                    </div>
+                                </div>
+                                <!-- Les réglages restent enregistrés quand la case est
+                                     décochée : on peut préparer une liaison sans l'appliquer. -->
+                                <div id="div_presenciumAlarmeLiee" style="display:none;">
+                                    <div class="form-group">
+                                        <label class="col-sm-4 control-label">
+                                            {{État armé de la centrale}}
+                                            <sup><i class="fas fa-question-circle" title="{{La commande info qui dit si la vraie alarme est armée. Avec une info binaire « Armée », laissez « == 1 ». Avec une info texte (« Désarmé », « Armé », « Mode nuit »…), écrivez par exemple « != Désarmé ». La comparaison est celle des conditions des règles.}}"></i></sup>
+                                        </label>
+                                        <div class="col-sm-8">
+                                            <div class="input-group">
+                                                <input type="text" class="form-control roundedLeft" id="in_presenciumAlarmeNom_alarme_etat" readonly placeholder="{{Aucune commande choisie}}">
+                                                <span class="input-group-btn">
+                                                    <a class="btn btn-default" data-presencium-alarme-choisir="alarme_etat" data-presencium-alarme-type="info" title="{{Choisir la commande}}"><i class="fas fa-search"></i></a>
+                                                    <a class="btn btn-default roundedRight" data-presencium-alarme-vider="alarme_etat" title="{{Retirer la commande}}"><i class="fas fa-times"></i></a>
+                                                </span>
+                                            </div>
+                                            <input type="text" class="eqLogicAttr" data-l1key="configuration" data-l2key="alarme_etat" style="display:none;">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="col-sm-4 control-label">
+                                            {{Armée quand la valeur est}}
+                                        </label>
+                                        <div class="col-sm-2">
+                                            <select class="eqLogicAttr form-control" data-l1key="configuration" data-l2key="alarme_operateur">
+                                                <option value="==">==</option>
+                                                <option value="!=">!=</option>
+                                                <option value="&gt;">&gt;</option>
+                                                <option value="&gt;=">&gt;=</option>
+                                                <option value="&lt;">&lt;</option>
+                                                <option value="&lt;=">&lt;=</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-sm-3">
+                                            <input type="text" class="eqLogicAttr form-control" data-l1key="configuration" data-l2key="alarme_valeur" placeholder="1">
+                                        </div>
+                                    </div>
+                                    <?php
+                                    /* Les trois ordres : même ligne, seule la clé change. */
+                                    $presenciumOrdresAlarme = array(
+                                        'alarme_cmd_armer'    => array('{{Commande pour Armer}}', '{{La commande action de la centrale exécutée par l\'action « Armer » du foyer.}}'),
+                                        'alarme_cmd_desarmer' => array('{{Commande pour Désarmer}}', '{{La commande action de la centrale exécutée par l\'action « Désarmer » du foyer.}}'),
+                                        'alarme_cmd_nuit'     => array('{{Commande pour Mode nuit}}', '{{Facultative. Si elle est choisie, le foyer gagne une action « Mode nuit » qui l\'exécute. Hors service, le mode nuit est refusé comme un armement.}}'),
+                                    );
+                                    foreach ($presenciumOrdresAlarme as $cle => $textes) {
+                                        echo '<div class="form-group">';
+                                        echo '<label class="col-sm-4 control-label">' . $textes[0]
+                                           . ' <sup><i class="fas fa-question-circle" title="' . $textes[1] . '"></i></sup></label>';
+                                        echo '<div class="col-sm-8"><div class="input-group">';
+                                        echo '<input type="text" class="form-control roundedLeft" id="in_presenciumAlarmeNom_' . $cle . '" readonly placeholder="{{Aucune commande choisie}}">';
+                                        echo '<span class="input-group-btn">';
+                                        echo '<a class="btn btn-default" data-presencium-alarme-choisir="' . $cle . '" data-presencium-alarme-type="action" title="{{Choisir la commande}}"><i class="fas fa-search"></i></a>';
+                                        echo '<a class="btn btn-default roundedRight" data-presencium-alarme-vider="' . $cle . '" title="{{Retirer la commande}}"><i class="fas fa-times"></i></a>';
+                                        echo '</span></div>';
+                                        echo '<input type="text" class="eqLogicAttr" data-l1key="configuration" data-l2key="' . $cle . '" style="display:none;">';
+                                        echo '</div></div>';
+                                    }
+                                    ?>
+                                    <div class="form-group">
+                                        <label class="col-sm-4 control-label">&nbsp;</label>
+                                        <div class="col-sm-8">
+                                            <span class="help-block" style="margin:0;">{{L'état n'est jamais écrit d'avance : après « Armer », « Alarme armée » passe à 1 quand la centrale le confirme. En simulation, les ordres sont journalisés et rien n'est envoyé. Mettre hors service ne désarme pas la centrale : cela suspend seulement les armements du foyer.}}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </fieldset>
+
+                            <fieldset>
                                 <legend><i class="fas fa-flask"></i> {{Simulation}}</legend>
                                 <div class="form-group">
                                     <label class="col-sm-4 control-label">
@@ -577,7 +658,7 @@ function presenciumVignette($_eqLogic, $_icone, $_actif, $_etat, $_detail, $_bad
                 <div class="alert alert-info" style="margin:5px;">
                     {{Ces commandes sont créées et tenues à jour par le plugin : elles réapparaissent à chaque enregistrement, il est donc inutile de les supprimer. Vous pouvez en revanche les renommer et changer leur visibilité, ces choix-là sont respectés.}}
                     <br>{{Sur une personne : « Présence » est la présence stabilisée, « Signal brut » la valeur du détecteur, et les commandes « Forcer » permettent de passer outre le temps d'un dépannage — « Suivi automatique » rend la main au plugin.}}
-                    <br>{{Sur un foyer : « Présence », « Tout le monde est là », « Occupation » et « Qui est là » se posent sur un tableau de bord ; « Armer », « Désarmer » et la mise en service pilotent l'alarme que le plugin porte lui-même.}}
+                    <br>{{Sur un foyer : « Présence », « Tout le monde est là », « Occupation » et « Qui est là » se posent sur un tableau de bord ; « Armer », « Désarmer » et la mise en service pilotent l'alarme que le plugin porte lui-même — ou, si le foyer est relié à une vraie alarme, la centrale elle-même.}}
                 </div>
                 <table id="table_cmd" class="table table-bordered table-condensed">
                     <thead>

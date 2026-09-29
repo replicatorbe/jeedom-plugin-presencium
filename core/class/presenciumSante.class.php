@@ -223,6 +223,7 @@ trait presenciumSante {
         $orphelines = array();
         $foyersVides = array();
         $foyersSimules = array();
+        $alarmesLiees = array();
         $reglesMortes = array();
         $reglesSansHeure = array();
         $maintenant = time();
@@ -299,6 +300,24 @@ trait presenciumSante {
             }
             if ((int) $eqLogic->getConfiguration('simulation', 0) === 1) {
                 $foyersSimules[] = $eqLogic->getHumanName();
+            }
+            /* L'alarme liée : une commande manquante laisse « Alarme armée »
+             * figée et les ordres sans destinataire, et le tableau de bord n'en
+             * montre rien — une maison qu'on croit armée. */
+            try {
+                foreach ($eqLogic->alarmeProblemes() as $probleme) {
+                    $alarmesLiees[] = $eqLogic->getHumanName() . ' — ' . $probleme;
+                }
+                $etatAlarme = (int) $eqLogic->getConfiguration('alarme_etat', 0);
+                if ($eqLogic->alarmeLiee() && $eqLogic->getIsEnable() == 1 && $etatAlarme > 0 && is_object(cmd::byId($etatAlarme))) {
+                    $ecouteAlarme = listener::byClassAndFunction(__CLASS__, 'onAlarme', array('id' => (int) $eqLogic->getId()));
+                    if (!is_object($ecouteAlarme) || !in_array('#' . $etatAlarme . '#', $ecouteAlarme->getEvent())) {
+                        $alarmesLiees[] = $eqLogic->getHumanName() . ' — '
+                                        . __('pas d\'écouteur sur l\'état de l\'alarme : il n\'est relu qu\'au passage du cron. Enregistrez le foyer pour le reposer.', __FILE__);
+                    }
+                }
+            } catch (Throwable $e) {
+                log::add(__CLASS__, 'debug', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
             }
             foreach ($eqLogic->regles() as $regle) {
                 /* Une règle « À heure fixe » sans heure ne se déclenche jamais,
@@ -461,6 +480,12 @@ trait presenciumSante {
             'result' => (count($reglesSansHeure) === 0) ? __('aucune', __FILE__) : implode(' ; ', $reglesSansHeure),
             'advice' => (count($reglesSansHeure) === 0) ? '' : __('Ces règles actives n\'ont aucune heure valable : elles ne se déclencheront jamais. Ouvrez-les et ajoutez au moins une heure.', __FILE__),
             'state'  => (count($reglesSansHeure) === 0),
+        );
+        $sante[] = array(
+            'test'   => __('Alarmes liées', __FILE__),
+            'result' => (count($alarmesLiees) === 0) ? __('aucun problème', __FILE__) : implode(' ; ', $alarmesLiees),
+            'advice' => (count($alarmesLiees) === 0) ? '' : __('Rouvrez le foyer, section « Alarme liée », et choisissez à nouveau les commandes de la centrale. Tant que l\'état ne se lit pas, « Alarme armée » garde sa dernière valeur.', __FILE__),
+            'state'  => (count($alarmesLiees) === 0),
         );
         $sante[] = array(
             /* Une information, pas une erreur : la simulation est un mode de

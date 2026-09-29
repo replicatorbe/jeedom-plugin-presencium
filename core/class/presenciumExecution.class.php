@@ -588,16 +588,27 @@ trait presenciumExecution {
             return $this->differerActions($_regle, $actions);
         }
 
-        foreach ($actions as $action) {
-            $nom = isset($action['cmd']) ? trim((string) $action['cmd']) : '';
-            if ($nom === '') {
-                continue;
+        /* La règle en cours, pour que la commande Armer du foyer, si c'est
+         * elle qu'on exécute, sache qui la demande (voir origineOrdre()).
+         * Rendue à sa valeur précédente même sur une exception : une origine
+         * restée collée attribuerait à cette règle le prochain clic sur le
+         * tableau de bord traité par le même processus. */
+        $precedente = self::$_regleEnCours;
+        self::$_regleEnCours = isset($_regle['nom']) ? (string) $_regle['nom'] : '';
+        try {
+            foreach ($actions as $action) {
+                $nom = isset($action['cmd']) ? trim((string) $action['cmd']) : '';
+                if ($nom === '') {
+                    continue;
+                }
+                if ($_simulation) {
+                    $rendu[] = array('cmd' => $nom, 'resultat' => __('simulée', __FILE__), 'ok' => true);
+                    continue;
+                }
+                $rendu[] = self::executerAction($action, $_test);
             }
-            if ($_simulation) {
-                $rendu[] = array('cmd' => $nom, 'resultat' => __('simulée', __FILE__), 'ok' => true);
-                continue;
-            }
-            $rendu[] = self::executerAction($action, $_test);
+        } finally {
+            self::$_regleEnCours = $precedente;
         }
         return $rendu;
     }

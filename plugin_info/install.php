@@ -73,6 +73,14 @@ function presencium_update() {
         } catch (Throwable $e) {
             log::add('presencium', 'error', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
         }
+        /* L'écouteur de l'alarme liée, pour la même raison : rien, sinon, ne
+         * le reposerait après un listener::clean(). Un essai à part : une
+         * source de personne cassée ne doit pas en priver le foyer. */
+        try {
+            $eqLogic->syncListenerAlarme();
+        } catch (Throwable $e) {
+            log::add('presencium', 'error', $eqLogic->getHumanName() . ' : ' . $e->getMessage());
+        }
         /* Journal en JSON Lines et état du foyer en fichier : conversion
          * d'avance, sinon faite au premier passage. */
         try {

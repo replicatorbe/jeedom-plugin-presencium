@@ -1,7 +1,21 @@
 # Changelog
 
-## Upcoming
+## 1.4
 
+- **Linked alarm: tying the household to a real alarm.** New "Linked alarm"
+  section on the household (unticked by default, no change for existing
+  households): a control panel state command, compared like a condition line,
+  and the commands to execute for *Arm*, *Disarm* and, optionally, *Night
+  mode*. Once linked, "Alarm armed" follows the real state (listener, cron,
+  save) — generic types included, for Google, Matter and widgets; *Arm* and
+  *Disarm* send the orders to the panel without writing the state in advance;
+  simulation holds them back; the log says who asked (rule, user, scenario); a
+  linked command that cannot be found fails in the log without breaking
+  anything. A **Night mode** action is added to the household when a command is
+  linked to it. "Alarm enabled" stays the household's switch: disabled, no
+  arming and no night mode, and disabling does not disarm the panel. Health
+  page: a "Linked alarms" line. Documentation: "Linking a real alarm", with an
+  Ajax control panel example.
 - **New "At a fixed time" trigger.** A list of 1 to 24 times (21:30, 22:00…):
   the rule comes up at each of them, once a day, and its conditions decide.
   Five minutes of catch-up if Jeedom missed the minute, never for a time from

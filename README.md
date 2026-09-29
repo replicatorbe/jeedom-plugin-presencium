@@ -26,9 +26,10 @@ dans son salon.
   quand la maison est vide, qui est arrivé le premier, qui est parti le dernier.
 - **L'alarme que le cœur n'a plus.** Jeedom n'a plus d'alarme depuis la v4 : le
   foyer porte « en service » et « armée » lui-même, avec les types génériques
-  d'alarme du cœur, qui, eux, existent toujours. Le jour où une vraie alarme
-  sera installée, les règles la piloteront par leurs actions et la liront par
-  leurs conditions, sans changer de forme.
+  d'alarme du cœur, qui, eux, existent toujours. Quand une vraie alarme est
+  installée, le foyer s'y relie : Armer, Désarmer et Mode nuit lui envoient
+  leurs ordres, « Alarme armée » suit son état réel, et les règles gardent
+  leur forme.
 - **Des règles qui se lisent comme une phrase.** Quand le dernier part, si
   l'alarme est en service, après cinq minutes, armer — et pas plus d'une fois
   par dix minutes. Sept déclencheurs, une plage horaire, des jours, et autant de
@@ -59,7 +60,7 @@ source.
 
 Ce n'est pas une alarme. Pas de sirène, pas de temporisation de sortie, pas de
 code, pas de liste de détecteurs surveillés. Il porte deux états et les actions
-qui vont avec, en attendant qu'une vraie alarme prenne la place.
+qui vont avec, ou se fait la façade d'une vraie alarme quand il y en a une.
 
 Il ne fait pas de géolocalisation, et il ne remplace pas les scénarios : ce qui
 se rejoue tous les jours autour de la présence est dans le plugin, ce qui dépend

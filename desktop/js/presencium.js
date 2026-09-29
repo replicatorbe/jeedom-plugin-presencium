@@ -755,6 +755,22 @@ function presenciumRenderAvertissements() {
   }
 
   if (type === 'foyer') {
+    /* Une liaison cochée sans état ou sans ordres : le foyer ne commanderait
+       rien et « Alarme armée » ne bougerait plus, ce qui ne se voit pas sur
+       la tuile. Le dire ici, avant l'enregistrement. */
+    var caseLiee = document.getElementById('in_presenciumAlarmeLiee')
+    if (caseLiee !== null && caseLiee.checked) {
+      var manque = []
+      if (presenciumEntier(presenciumValeurAlarme('alarme_etat'), 0, 0, 99999999) <= 0) { manque.push('{{l\'état armé}}') }
+      if (presenciumEntier(presenciumValeurAlarme('alarme_cmd_armer'), 0, 0, 99999999) <= 0) { manque.push('{{Armer}}') }
+      if (presenciumEntier(presenciumValeurAlarme('alarme_cmd_desarmer'), 0, 0, 99999999) <= 0) { manque.push('{{Désarmer}}') }
+      if (manque.length > 0) {
+        conteneur.appendChild(presenciumText('div', 'alert alert-warning',
+          '{{L\'alarme liée est cochée mais il manque des commandes :}} ' + manque.join(', ')
+          + '. {{Tant qu\'elles manquent, les actions correspondantes du foyer échouent (le journal le dit) et « Alarme armée » garde sa dernière valeur.}}'))
+      }
+    }
+
     /* Le reproche n'est fait que si la liste est arrivée : sur un échec ou
        pendant l'aller-retour, un foyer parfaitement composé se ferait accuser
        d'être vide. */
@@ -764,6 +780,37 @@ function presenciumRenderAvertissements() {
         '{{Aucune personne n\'est cochée dans ce foyer alors que des personnes sont déclarées : il restera vide en permanence, « Qui est là » restera muet, et ses règles de départ ne partiront jamais. Cochez ses habitants dans « Les habitants ».}}'))
     }
   }
+}
+
+/* ============================================================ ALARME LIÉE */
+
+/* Les commandes de l'alarme liée, par clé de configuration. Chacune a sa
+   ligne dans la page : un champ lisible (readonly) et le champ caché que le
+   coeur enregistre, comme la source d'une personne. */
+var presenciumCommandesAlarme = ['alarme_etat', 'alarme_cmd_armer', 'alarme_cmd_desarmer', 'alarme_cmd_nuit']
+
+/* Pose une commande de l'alarme liée à l'écran et dans son champ caché. */
+function presenciumAppliquerCommandeAlarme(_cle, _id) {
+  var champ = document.querySelector('.eqLogicAttr[data-l1key="configuration"][data-l2key="' + _cle + '"]')
+  var id = presenciumEntier(String(init(_id, '')).replace(/#/g, ''), 0, 0, 99999999)
+  if (champ !== null) { champ.jeeValue(id > 0 ? String(id) : '') }
+  presenciumAfficherNomCommande(document.getElementById('in_presenciumAlarmeNom_' + _cle), id)
+}
+
+/* Les réglages de la liaison ne se montrent que si elle est cochée : un foyer
+   qui n'a pas de vraie alarme n'a pas à lire quatre lignes qui ne le
+   concernent pas. Ils restent enregistrés, cochés ou non. */
+function presenciumAfficherAlarmeLiee() {
+  var caseLiee = document.getElementById('in_presenciumAlarmeLiee')
+  var bloc = document.getElementById('div_presenciumAlarmeLiee')
+  if (bloc === null) { return }
+  bloc.style.display = (caseLiee !== null && caseLiee.checked) ? '' : 'none'
+}
+
+/* La valeur d'une clé de l'alarme liée telle qu'elle est à l'écran. */
+function presenciumValeurAlarme(_cle) {
+  var champ = document.querySelector('.eqLogicAttr[data-l1key="configuration"][data-l2key="' + _cle + '"]')
+  return (champ === null) ? '' : String(champ.jeeValue())
 }
 
 /* ================================================== CYCLE DE VIE DE LA PAGE */
@@ -800,6 +847,16 @@ function printEqLogic(_eqLogic) {
     presenciumRenderListePersonnes()
 
     presenciumAppliquerSource(init(configuration.source, 0))
+
+    /* L'alarme liée : les noms lisibles des commandes, et les défauts d'un
+       foyer enregistré avant que la liaison n'existe — le coeur a vidé les
+       champs, et un opérateur vide ne s'afficherait pas « == ». */
+    for (var a = 0; a < presenciumCommandesAlarme.length; a++) {
+      presenciumAppliquerCommandeAlarme(presenciumCommandesAlarme[a], init(configuration[presenciumCommandesAlarme[a]], 0))
+    }
+    var champOperateur = document.querySelector('.eqLogicAttr[data-l1key="configuration"][data-l2key="alarme_operateur"]')
+    if (champOperateur !== null && String(champOperateur.value) === '') { champOperateur.value = '==' }
+    presenciumAfficherAlarmeLiee()
 
     /* Le coeur ne réinitialise que les .eqLogicAttr : sans cela, le journal et
        le verdict garderaient ceux de l'équipement précédemment ouvert. */
@@ -845,6 +902,14 @@ function saveEqLogic(_eqLogic) {
     delete _eqLogic.configuration.regles
     delete _eqLogic.configuration.personnes
     delete _eqLogic.configuration.simulation
+    /* Pas d'alarme sur une personne : les champs du foyer, cachés mais
+       présents dans la page, ne doivent pas s'inscrire dans sa configuration. */
+    delete _eqLogic.configuration.alarme_liee
+    delete _eqLogic.configuration.alarme_operateur
+    delete _eqLogic.configuration.alarme_valeur
+    for (var a = 0; a < presenciumCommandesAlarme.length; a++) {
+      delete _eqLogic.configuration[presenciumCommandesAlarme[a]]
+    }
   }
   return _eqLogic
 }
@@ -954,6 +1019,30 @@ presenciumContainer.addEventListener('click', function (event) {
 
   if (cible = event.target.closest('#bt_presenciumViderSource')) {
     presenciumAppliquerSource(0)
+    presenciumMarkModified()
+    return
+  }
+
+  /* ---- commandes de l'alarme liée d'un foyer. Le type filtre la loupe :
+     l'état est une info, les ordres des actions. Une info choisie comme
+     ordre ne « s'exécuterait » pas, une action choisie comme état serait
+     appuyée à chaque lecture — le serveur refuse l'une et l'autre, autant ne
+     pas les proposer. */
+  if (cible = event.target.closest('[data-presencium-alarme-choisir]')) {
+    var cleChoisie = cible.getAttribute('data-presencium-alarme-choisir')
+    var typeChoisi = cible.getAttribute('data-presencium-alarme-type') || 'info'
+    jeedom.cmd.getSelectModal({ cmd: { type: typeChoisi } }, function (result) {
+      if (!isset(result) || !isset(result.cmd) || !isset(result.cmd.id)) { return }
+      presenciumAppliquerCommandeAlarme(cleChoisie, result.cmd.id)
+      presenciumRenderAvertissements()
+      presenciumMarkModified()
+    })
+    return
+  }
+
+  if (cible = event.target.closest('[data-presencium-alarme-vider]')) {
+    presenciumAppliquerCommandeAlarme(cible.getAttribute('data-presencium-alarme-vider'), 0)
+    presenciumRenderAvertissements()
     presenciumMarkModified()
     return
   }
@@ -1211,6 +1300,15 @@ presenciumContainer.addEventListener('change', function (event) {
      cocher, sinon elle annonce le contraire de ce qui est à l'écran. */
   if (event.target.closest('#in_presenciumSimulation')) {
     presenciumRegleEditeurSimulationEtat()
+    return
+  }
+
+  /* La case de l'alarme liée : montrer ses réglages, et dire tout de suite
+     ce qui manque. C'est un .eqLogicAttr : le coeur voit déjà la
+     modification, inutile de la marquer. */
+  if (event.target.closest('#in_presenciumAlarmeLiee')) {
+    presenciumAfficherAlarmeLiee()
+    presenciumRenderAvertissements()
     return
   }
 
