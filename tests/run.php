@@ -401,6 +401,37 @@ verifie('une seule action retenue', count($regle['actions']), 1);
 verifie('les options manquantes deviennent un tableau', $regle['actions'][0]['options'], array());
 verifie('cmd_id résolu en entier', $regle['actions'][0]['cmd_id'], 4242);
 
+/* La relance. Absente, elle vaut zéro : une règle écrite avant elle doit
+ * abandonner au premier refus, comme elle l'a toujours fait. Sa durée, elle,
+ * retombe sur son DÉFAUT quand elle est illisible, jamais sur le plancher —
+ * une minute de relance n'en laisse aucune, et la fonction aurait l'air en
+ * panne. */
+verifie('relance absente : désactivée', $regle['relance'], 0);
+verifie('durée de relance absente : le défaut', $regle['relance_max'], presenciumRegles::RELANCE_DUREE_DEFAUT);
+verifie('le défaut de la durée est une heure', presenciumRegles::RELANCE_DUREE_DEFAUT, 60);
+$relance = function ($_relance, $_duree) {
+    $brut = array('declencheur' => 'arrivee_premier');
+    if ($_relance !== null) { $brut['relance'] = $_relance; }
+    if ($_duree !== null) { $brut['relance_max'] = $_duree; }
+    $propre = presenciumRegles::normaliserRegle($brut);
+    return array($propre['relance'], $propre['relance_max']);
+};
+verifie('relance saisie en chaîne', $relance('5', '30'), array(5, 30));
+verifie('relance plafonnée à RELANCE_MAX', $relance('9999', null)[0], presenciumRegles::RELANCE_MAX);
+verifie('RELANCE_MAX vaut deux heures', presenciumRegles::RELANCE_MAX, 120);
+verifie('relance négative : zéro', $relance('-5', null)[0], 0);
+verifie('relance en toutes lettres : zéro', $relance('cinq', null)[0], 0);
+verifie('durée plafonnée à ATTENTE_MAX', $relance('5', '99999')[1], presenciumRegles::ATTENTE_MAX);
+verifie('durée nulle : une minute, pas zéro', $relance('5', '0')[1], 1);
+verifie('durée négative : une minute', $relance('5', '-10')[1], 1);
+verifie('durée vide : le défaut', $relance('5', '')[1], presenciumRegles::RELANCE_DUREE_DEFAUT);
+verifie('durée en toutes lettres : le défaut', $relance('5', 'une heure')[1], presenciumRegles::RELANCE_DUREE_DEFAUT);
+verifie('normalisation d\'une règle à relance idempotente',
+        presenciumRegles::normaliserRegle(presenciumRegles::normaliserRegle(
+            array('id' => 'r-x', 'declencheur' => 'arrivee_premier', 'relance' => '5', 'relance_max' => '45'))),
+        presenciumRegles::normaliserRegle(
+            array('id' => 'r-x', 'declencheur' => 'arrivee_premier', 'relance' => '5', 'relance_max' => '45')));
+
 /* La case décochée n'arrive pas du tout dans le formulaire : l'absence vaut
  * « non ». Une règle qu'on croit désactivée et qui agit quand même, c'est une
  * alarme qui s'arme ; l'inverse se voit dans la liste. */
@@ -879,6 +910,212 @@ verifie('instantané illisible : l\'attente continue',
         presenciumRegles::declencheurInverse(array('declencheur' => 'depart_dernier'), array(), null), false);
 verifie('déclencheur inconnu : l\'attente continue',
         presenciumRegles::declencheurInverse(array('declencheur' => 'x'), array(), $un), false);
+
+/* ----------------------------------------------------------------- 19 ---
+ * Le déclencheur « À heure fixe ». Tout ce qui décide est dans
+ * presenciumRegles, pur : la liste des heures, la mémoire, l'heure due. C'est
+ * ici qu'on fixe l'horloge et qu'on éprouve ce qu'une vraie maison ne rejoue
+ * pas à la demande — minuit, un cron qui a manqué la minute, une règle
+ * enregistrée juste après l'heure. Chacun de ces cas, s'il se trompe, arme
+ * l'alarme deux fois ou pas du tout, sans une erreur nulle part. */
+echo "\nDéclencheur à heure fixe\n";
+$nuit = array('21:30', '22:00', '22:30', '23:00', '00:00', '00:30');
+$regleHeure = presenciumRegles::normaliserRegle(array(
+    'id' => 'r-nuit', 'nom' => 'Mode nuit', 'actif' => 1, 'declencheur' => 'heure',
+    'heures_fixes' => array('23:00', '21:30', '00:30', '22:00', '00:00', '22:30', '22:00'),
+    'personne' => 7, 'minutes' => 30));
+verifieVrai('`heure` est un déclencheur connu', in_array('heure', presenciumRegles::DECLENCHEURS, true));
+verifie('heures triées et dédoublonnées, minuit en tête', $regleHeure['heures_fixes'],
+        array('00:00', '00:30', '21:30', '22:00', '22:30', '23:00'));
+verifie('la personne n\'a pas de sens : zéro', $regleHeure['personne'], 0);
+verifie('heures illisibles retirées, pas remplacées',
+        presenciumRegles::heuresFixes(array('21:30', '25:00', '12:60', 'minuit', '', null, array('22:00'), '7:5', '0705', '07h05')),
+        array('07:05', '21:30'));
+verifie('une chaîne écrite à la main se lit aussi',
+        presenciumRegles::heuresFixes('21:30, 22:00;23:00  00:30'), array('00:30', '21:30', '22:00', '23:00'));
+$toutes = array();
+for ($h = 0; $h < 24; $h++) {
+    $toutes[] = sprintf('%02d:00', $h);
+    $toutes[] = sprintf('%02d:30', $h);
+}
+verifie('vingt-quatre heures au plus', count(presenciumRegles::heuresFixes($toutes)), presenciumRegles::HEURES_FIXES_MAX);
+verifie('HEURES_FIXES_MAX vaut vingt-quatre', presenciumRegles::HEURES_FIXES_MAX, 24);
+$sansHeure = presenciumRegles::normaliserRegle(array('declencheur' => 'heure', 'heures_fixes' => array('99:99')));
+verifieVrai('liste vidée : la règle est gardée', is_array($sansHeure));
+verifie('… avec une liste vide', $sansHeure['heures_fixes'], array());
+verifie('un autre déclencheur n\'a pas d\'heures',
+        presenciumRegles::normaliserRegle(array('declencheur' => 'arrivee', 'heures_fixes' => array('21:30')))['heures_fixes'],
+        array());
+verifie('normalisation idempotente', presenciumRegles::normaliserRegle($regleHeure), $regleHeure);
+verifie('une heure ne s\'inverse jamais',
+        presenciumRegles::declencheurInverse($regleHeure, array('type' => 'heure', 'heure' => '21:30'), instantane(array(), 2)),
+        false);
+verifie('aucune transition de présence ne le présente',
+        presenciumRegles::correspond($regleHeure, array('type' => 'depart_dernier', 'personne' => 0)), false);
+
+/* Le libellé : l'heure qui a déclenché, sinon la liste. */
+verifie('libellé : l\'heure qui a déclenché',
+        presenciumRegles::libelleDeclencheur($regleHeure, array(), array('type' => 'heure', 'heure' => '21:30')), 'À 21:30');
+verifie('libellé sans transition : la liste',
+        presenciumRegles::libelleDeclencheur($regleHeure, array()), 'À 00:00, 00:30, 21:30, 22:00, 22:30, 23:00');
+verifie('libellé d\'une règle sans heure',
+        presenciumRegles::libelleDeclencheur($sansHeure, array()), 'À heure fixe (aucune heure)');
+verifie('les autres libellés ignorent la transition',
+        presenciumRegles::libelleDeclencheur(array('declencheur' => 'depart_dernier'), array(), array('heure' => '21:30')),
+        'La maison devient vide');
+
+/* L'horloge, minute par minute. $joue() rejoue ce que fait le moteur : mettre
+ * la mémoire en place, chercher l'heure due, la marquer jouée. */
+$memoire = null;
+$joue = function ($_quand) use (&$memoire, $regleHeure) {
+    $t = strtotime($_quand);
+    $memoire = presenciumRegles::memoireHeureFixe($regleHeure, $t, $memoire);
+    $due = presenciumRegles::heureFixeDue($regleHeure, $t, $memoire);
+    if ($due !== null) {
+        $memoire['echeance'] = $due['echeance'];
+        return $due['heure'];
+    }
+    return null;
+};
+/* Règle vue pour la première fois à 21:00 : une nuit entière, un passage par
+ * minute, de 21:00 à 02:00. */
+$memoire = null;
+$tombees = array();
+for ($t = strtotime('2026-09-29 21:00:03'); $t <= strtotime('2026-09-30 02:00:00'); $t += 60) {
+    $heure = $joue(date('Y-m-d H:i:s', $t));
+    if ($heure !== null) {
+        $tombees[] = date('d H:i', $t) . '=' . $heure;
+    }
+}
+verifie('une nuit : six heures, chacune une fois, à sa minute', implode(' ', $tombees),
+        '29 21:30=21:30 29 22:00=22:00 29 22:30=22:30 29 23:00=23:00 30 00:00=00:00 30 00:30=00:30');
+/* La nuit suivante : 00:00 et 00:30 appartiennent au jour qui commence, ce
+ * sont donc de nouvelles échéances, et elles retombent. */
+$tombees = array();
+for ($t = strtotime('2026-09-30 21:00:03'); $t <= strtotime('2026-10-01 01:00:00'); $t += 60) {
+    $heure = $joue(date('Y-m-d H:i:s', $t));
+    if ($heure !== null) {
+        $tombees[] = $heure;
+    }
+}
+verifie('la nuit suivante : les six encore, minuit compris', implode(' ', $tombees),
+        '21:30 22:00 22:30 23:00 00:00 00:30');
+verifie('la mémoire garde la dernière échéance jouée', $memoire['echeance'], strtotime('2026-10-01 00:30:00'));
+
+/* Plusieurs passages dans la même minute (cron et écouteur) : une fois. */
+$memoire = presenciumRegles::memoireHeureFixe($regleHeure, strtotime('2026-09-29 21:00'), null);
+verifie('21:30:01 : tombe', $joue('2026-09-29 21:30:01'), '21:30');
+verifie('21:30:40, même minute : déjà jouée', $joue('2026-09-29 21:30:40'), null);
+verifie('21:31 : toujours pas', $joue('2026-09-29 21:31:02'), null);
+
+/* Le rattrapage : cinq minutes, jamais plus. */
+$memoire = presenciumRegles::memoireHeureFixe($regleHeure, strtotime('2026-09-29 21:00'), null);
+verifie('cron repris à 21:34:59 : 21:30 rattrapée', $joue('2026-09-29 21:34:59'), '21:30');
+$memoire = presenciumRegles::memoireHeureFixe($regleHeure, strtotime('2026-09-29 21:00'), null);
+verifie('cron repris à 21:35:00 : trop tard, perdue', $joue('2026-09-29 21:35:00'), null);
+verifie('… et 22:00 tombe normalement ensuite', $joue('2026-09-29 22:00:05'), '22:00');
+verifie('RATTRAPAGE_HEURE vaut cinq minutes', presenciumRegles::RATTRAPAGE_HEURE, 5);
+/* Jamais une heure de la veille : 23:59 manquée n'est pas jouée à 00:02. */
+$tardive = presenciumRegles::normaliserRegle(array('id' => 'r-t', 'declencheur' => 'heure', 'heures_fixes' => array('23:59')));
+$m = presenciumRegles::memoireHeureFixe($tardive, strtotime('2026-09-29 23:00'), null);
+verifie('00:02 : 23:59 de la veille n\'est pas rattrapée',
+        presenciumRegles::heureFixeDue($tardive, strtotime('2026-09-30 00:02:00'), $m), null);
+verifie('23:59:30 : 23:59 tombe',
+        presenciumRegles::heureFixeDue($tardive, strtotime('2026-09-29 23:59:30'), $m)['heure'], '23:59');
+/* Minuit rattrapé dans sa propre journée. */
+$m = presenciumRegles::memoireHeureFixe($regleHeure, strtotime('2026-09-29 23:30'), null);
+$due = presenciumRegles::heureFixeDue($regleHeure, strtotime('2026-09-30 00:03:00'), $m);
+verifie('00:03 : 00:00 rattrapée, datée du jour qui commence', $due['echeance'], strtotime('2026-09-30 00:00:00'));
+/* Deux heures dans la même fenêtre : une seule exécution, la plus récente. */
+$serrees = presenciumRegles::normaliserRegle(array('id' => 'r-s', 'declencheur' => 'heure', 'heures_fixes' => array('22:00', '22:02')));
+$m = presenciumRegles::memoireHeureFixe($serrees, strtotime('2026-09-29 21:00'), null);
+$due = presenciumRegles::heureFixeDue($serrees, strtotime('2026-09-29 22:03:00'), $m);
+verifie('22:00 et 22:02 manquées : seule 22:02 tombe', $due['heure'], '22:02');
+$m['echeance'] = $due['echeance'];
+verifie('… et 22:00 ne tombe plus derrière elle',
+        presenciumRegles::heureFixeDue($serrees, strtotime('2026-09-29 22:04:00'), $m), null);
+
+/* Pas de rétroactivité. */
+$memoire = null;
+verifie('règle vue à 22:02 : 22:00 n\'est pas jouée', $joue('2026-09-29 22:02:10'), null);
+verifie('… à 22:04 non plus', $joue('2026-09-29 22:04:00'), null);
+verifie('… 22:30 l\'est', $joue('2026-09-29 22:30:00'), '22:30');
+$memoire = null;
+verifie('règle vue à 21:30:02 (enregistrée à 21:29) : 21:30 est jouée', $joue('2026-09-29 21:30:02'), '21:30');
+verifie('vue arrondie à la minute', $memoire['vue'], strtotime('2026-09-29 21:30:00'));
+/* Une heure ajoutée après coup ne se joue pas non plus en retard. */
+$memoire = presenciumRegles::memoireHeureFixe($regleHeure, strtotime('2026-09-29 21:00'), null);
+$joue('2026-09-29 21:30:00');
+$ajoutee = $regleHeure;
+$ajoutee['heures_fixes'] = presenciumRegles::heuresFixes(array_merge($regleHeure['heures_fixes'], array('21:40')));
+$m = presenciumRegles::memoireHeureFixe($ajoutee, strtotime('2026-09-29 21:42:00'), $memoire);
+verifie('liste modifiée : mémoire refaite', $m['vue'], strtotime('2026-09-29 21:42:00'));
+verifie('21:40 ajoutée à 21:42 : pas jouée',
+        presenciumRegles::heureFixeDue($ajoutee, strtotime('2026-09-29 21:42:00'), $m), null);
+/* Une mémoire laissée par vide_depuis (un entier) ne vaut rien ici. */
+verifie('mémoire illisible : rien de dû',
+        presenciumRegles::heureFixeDue($regleHeure, strtotime('2026-09-29 21:30:00'), 1759170000), null);
+verifie('mémoire illisible : refaite à la minute courante',
+        presenciumRegles::memoireHeureFixe($regleHeure, strtotime('2026-09-29 21:30:20'), 1759170000)['vue'],
+        strtotime('2026-09-29 21:30:00'));
+verifie('une règle d\'un autre déclencheur n\'a jamais d\'heure due',
+        presenciumRegles::heureFixeDue(array('declencheur' => 'arrivee', 'heures_fixes' => array('21:30')),
+                                       strtotime('2026-09-29 21:30:00'),
+                                       array('vue' => 0, 'signature' => '21:30', 'echeance' => 0)), null);
+
+/* Les changements d'heure. 25 octobre 2026 : 02:30 existe deux fois ; 29 mars
+ * 2026 : 02:30 n'existe pas. */
+$deuxHeures = presenciumRegles::normaliserRegle(array('id' => 'r-d', 'declencheur' => 'heure', 'heures_fixes' => array('02:30')));
+$m = presenciumRegles::memoireHeureFixe($deuxHeures, strtotime('2026-10-25 01:00'), null);
+$fois = 0;
+for ($t = strtotime('2026-10-25 01:00:00'); $t <= strtotime('2026-10-25 05:00:00'); $t += 60) {
+    $due = presenciumRegles::heureFixeDue($deuxHeures, $t, $m);
+    if ($due !== null) {
+        $m['echeance'] = $due['echeance'];
+        $fois++;
+    }
+}
+verifie('passage à l\'heure d\'hiver : 02:30 une seule fois', $fois, 1);
+$m = presenciumRegles::memoireHeureFixe($deuxHeures, strtotime('2026-03-29 01:00'), null);
+$fois = 0;
+for ($t = strtotime('2026-03-29 01:00:00'); $t <= strtotime('2026-03-29 05:00:00'); $t += 60) {
+    $due = presenciumRegles::heureFixeDue($deuxHeures, $t, $m);
+    if ($due !== null) {
+        $m['echeance'] = $due['echeance'];
+        $fois++;
+    }
+}
+verifie('passage à l\'heure d\'été : 02:30 absente, jouée une fois', $fois, 1);
+
+/* La plage et les jours restent de simples filtres : à 00:30 le samedi, sans
+ * plage, c'est samedi. */
+$semaineHeure = presenciumRegles::normaliserRegle(array('declencheur' => 'heure', 'heures_fixes' => array('00:30'),
+    'conditions' => array('jours' => array(1, 2, 3, 4, 5))));
+verifie('00:30 un samedi, jours lun–ven, sans plage : écartée',
+        presenciumRegles::horaireOk($semaineHeure, strtotime('2026-09-26 00:30')), false);
+verifieVrai('00:30 un vendredi : admise',
+            presenciumRegles::horaireOk($semaineHeure, strtotime('2026-09-25 00:30')));
+
+/* ----------------------------------------------------------- LE MOTEUR ---
+ * Le moteur de règles (attentes, relances) a son propre jeu d'essai,
+ * tests/moteur.php, parce qu'il a besoin de doublures du coeur de Jeedom — une
+ * fonction __(), des classes log et cmd — qui n'ont rien à faire ici : ce
+ * fichier-ci promet de tourner sans elles, et c'est ce qui prouve que la
+ * décision de présence et la lecture des règles ignorent vraiment Jeedom.
+ *
+ * Il est lancé d'ici, dans un processus à part, pour que « php tests/run.php »
+ * reste la seule commande à retenir — c'est elle que lancent l'intégration
+ * continue et ~/dev/tools/test-all.sh. Un jeu d'essai qu'il faut penser à
+ * lancer à la main est un jeu d'essai qu'on oublie. */
+echo "\nMoteur de règles (tests/moteur.php)\n";
+$sortieMoteur = array();
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/moteur.php') . ' 2>&1', $sortieMoteur, $codeMoteur);
+foreach ($sortieMoteur as $ligne) {
+    if (strpos($ligne, 'ÉCHEC') !== false || strpos($ligne, 'Fatal') !== false || strpos($ligne, 'Warning') !== false) {
+        echo '  ' . trim($ligne) . "\n";
+    }
+}
+verifie('moteur : ' . trim((string) end($sortieMoteur)), $codeMoteur, 0);
 
 /* ---------------------------------------------------------------- BILAN --- */
 echo "\n";

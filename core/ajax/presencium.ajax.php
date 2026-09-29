@@ -295,7 +295,12 @@ try {
      * dans une page web : c'est là qu'on trie par verdict et qu'on compte. */
     if (init('action') == 'journalCsv') {
         $eqLogic = $getEqLogic(init('id'));
-        $lignes = array(array('date', 'genre', 'verdict', 'simulation', 'regle', 'detail', 'actions'));
+        /* `declencheur` en dernière colonne, et non à côté de `regle` : un
+         * tableur déjà branché sur les colonnes d'avant garde ses formules. Il
+         * dit, pour une règle à heure fixe, laquelle des heures est tombée
+         * (« À 21:30 ») — la seule façon de compter, sur une semaine, à quelle
+         * heure le mode nuit s'arme vraiment. */
+        $lignes = array(array('date', 'genre', 'verdict', 'simulation', 'regle', 'detail', 'actions', 'declencheur'));
         foreach ($eqLogic->journalLire(5000) as $entree) {
             $actions = array();
             if (isset($entree['actions']) && is_array($entree['actions'])) {
@@ -312,6 +317,7 @@ try {
                 isset($entree['nom']) ? $entree['nom'] : '',
                 isset($entree['detail']) ? $entree['detail'] : '',
                 implode(' | ', $actions),
+                isset($entree['declencheur']) ? $entree['declencheur'] : '',
             );
         }
         $csv = '';

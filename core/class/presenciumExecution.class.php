@@ -58,8 +58,11 @@ trait presenciumExecution {
                 'declencheur' => 'depart_dernier',
                 'personne'    => 0,
                 'minutes'     => 0,
+                'heures_fixes' => array(),
                 'attente'     => 0,
                 'repos'       => 0,
+                'relance'     => 0,
+                'relance_max' => presenciumRegles::RELANCE_DUREE_DEFAUT,
                 'simulation'  => 0,
                 'conditions'  => array('lignes' => array()),
                 'actions'     => array(),
@@ -96,12 +99,16 @@ trait presenciumExecution {
 
     /*
      * Confronte les transitions franchies à chaque règle, dans l'ordre où elles
-     * ont été franchies, puis fait courir les déclencheurs temporels.
+     * ont été franchies, puis fait courir les déclencheurs temporels — les
+     * durées (vide_depuis, occupee_depuis) et les heures fixes (heure).
      */
     public function jouerRegles($_maintenant, $_transitions, $_instantane) {
         $rendus = array();
         $regles = $this->regles();
-        $temporels = array('vide_depuis', 'occupee_depuis');
+        /* `heure` est rangé avec les durées : lui non plus ne naît pas d'une
+         * comparaison entre deux instantanés, et une transition de présence ne
+         * doit jamais le présenter. */
+        $temporels = array('vide_depuis', 'occupee_depuis', 'heure');
 
         /*
          * LES TRANSITIONS À L'EXTÉRIEUR, LES RÈGLES À L'INTÉRIEUR.
@@ -166,6 +173,32 @@ trait presenciumExecution {
             }
             try {
                 /*
+                 * L'HEURE FIXE, À PART : elle passe par executerRegle() même
+                 * décochée ou au repos, et c'est l'inverse exact des durées
+                 * ci-dessous — pour la même raison retournée.
+                 *
+                 * Une durée est un épisode qui se prolonge : ne pas le
+                 * consommer tant que la règle est décochée lui laisse une
+                 * chance de partir plus tard dans la même absence. Une heure,
+                 * elle, est un INSTANT : 22:00 ne se prolonge pas. La laisser
+                 * en réserve pendant que la règle est décochée ou au repos, ce
+                 * serait la jouer à 22:03 parce qu'on a recoché la case à
+                 * 22:03 — une heure que personne n'a choisie. Elle est donc
+                 * consommée à l'instant où elle tombe, quoi qu'il arrive, et
+                 * executerRegle() dit au journal pourquoi elle n'a rien fait
+                 * (« désactivée », « anti-répétition »). Une ligne par heure
+                 * de la liste, pas par minute : le journal reste lisible, et
+                 * c'est le même traitement que les règles de front.
+                 */
+                if ($regle['declencheur'] === 'heure') {
+                    $transition = $this->transitionHeureFixe($regle, $_maintenant);
+                    if ($transition !== null) {
+                        $rendus[] = $this->executerRegle($regle, $_maintenant, array(
+                            'transition' => $transition, 'instantane' => $_instantane));
+                    }
+                    continue;
+                }
+                /*
                  * `actif` et `repos` sont testés ICI, avant transitionTemporelle
                  * — donc avant que l'épisode ne soit marqué consommé.
                  *
@@ -219,11 +252,18 @@ trait presenciumExecution {
      *
      * $_contexte['simuler'] force la simulation (case cochée à l'écran pour
      * un essai), en plus de enSimulation().
+     *
+     * $_contexte['relance_depuis'] n'est posé que par traiterAttentes(), quand
+     * c'est une RELANCE qui arrive à échéance : l'instant du premier essai
+     * raté, à partir duquel se compte la durée maximale de relance. Voir plus
+     * bas, au refus « conditions non remplies ».
      */
     public function executerRegle($_regle, $_maintenant = null, $_contexte = array(), $_test = false) {
         $maintenant = ($_maintenant === null) ? time() : (int) $_maintenant;
         $simulation = $this->enSimulation($_regle) || !empty($_contexte['simuler']);
         $attenteTerminee = !empty($_contexte['attente_terminee']);
+        $transition = (isset($_contexte['transition']) && is_array($_contexte['transition']))
+                    ? $_contexte['transition'] : null;
 
         /* Le détail des présences n'est calculé qu'après les refus qui ne
          * dépendent que de la règle : il coûte un verdict par personne. */
@@ -233,12 +273,18 @@ trait presenciumExecution {
             'essai'       => $_test ? true : false,
             'regle'       => $_regle['id'],
             'nom'         => $_regle['nom'],
-            'declencheur' => $this->libelleDeclencheur($_regle),
+            'declencheur' => $this->libelleDeclencheur($_regle, $transition),
             'verdict'     => 'declenchee',
             'detail'      => '',
             'conditions'  => array(),
             'actions'     => array(),
         );
+        /* L'heure fixe qui a déclenché, à part du libellé : le journal en tire
+         * son icône d'horloge, et un tri ou un filtre n'a pas à analyser une
+         * phrase traduite pour la retrouver. */
+        if ($transition !== null && isset($transition['heure'])) {
+            $entree['heure_fixe'] = (string) $transition['heure'];
+        }
 
         if (!$_test && (int) $_regle['actif'] !== 1) {
             return $this->conclureRegle($entree, 'desactivee');
@@ -270,11 +316,27 @@ trait presenciumExecution {
             }
         }
 
+        /*
+         * L'HORAIRE NE SE RELANCE PAS, même quand la règle a une relance.
+         *
+         * Une plage horaire dit QUAND la règle a le droit d'agir, pas « agis
+         * dès que la plage s'ouvre ». La relancer transformerait « si
+         * quelqu'un arrive entre 22:00 et 06:00, verrouille » en « si
+         * quelqu'un arrive à 21:30, verrouille à 22:00 » — une règle que
+         * l'utilisateur n'a pas écrite, et qui agirait sur une arrivée que
+         * l'horaire devait justement écarter. Les lignes de condition, elles,
+         * décrivent un état passager du monde (du mouvement devant une caméra,
+         * une porte entrouverte) : c'est pour elles qu'on réessaie.
+         *
+         * Pour la même raison, une relance qui retombe hors de la plage
+         * s'arrête là, sur ce verdict : la règle a dépassé l'heure où elle
+         * avait le droit d'agir, et le journal le dit.
+         */
         if (!$_test && !$horaireOk) {
             return $this->conclureRegle($entree, 'hors_horaire');
         }
         if (!$_test && !$conditionsOk) {
-            return $this->conclureRegle($entree, 'conditions_non_remplies');
+            return $this->refuserOuRelancer($_regle, $entree, $maintenant, $_contexte);
         }
 
         /*
@@ -297,6 +359,23 @@ trait presenciumExecution {
          */
         if (!$_test) {
             $this->etatPoser('repos', $_regle['id'], $maintenant);
+            /*
+             * Et l'attente ou la relance éventuellement en cours est effacée :
+             * la règle vient d'agir, il n'y a plus rien à réessayer.
+             *
+             * Le cas n'existait pas avant la relance — une règle sans attente
+             * n'en laissait jamais derrière elle. Maintenant, une règle sans
+             * attente mais avec relance peut en avoir une en cours quand un
+             * NOUVEAU déclenchement la fait agir tout de suite (« quelqu'un
+             * arrive » : la seconde personne rentre, la caméra est calme cette
+             * fois). Oubliée là, la relance arriverait à échéance quelques
+             * minutes plus tard et, l'attente terminée contournant le repos,
+             * verrouillerait la porte une deuxième fois.
+             *
+             * Jamais pendant un essai : le bouton « Tester » ne touche pas à
+             * l'ordonnancement, il ne doit pas non plus annuler une attente.
+             */
+            $this->etatPoser('attentes', $_regle['id'], null);
         }
 
         $entree['actions'] = $this->executerActions($_regle, $simulation, $_test);
@@ -334,6 +413,81 @@ trait presenciumExecution {
             }
         }
         return $this->conclureRegle($entree, $verdict);
+    }
+
+    /*
+     * Les conditions ont dit non : abandonner, ou réessayer plus tard.
+     *
+     * Sans relance (`relance` à zéro), c'est le verdict de toujours,
+     * « conditions non remplies », et la règle en reste là.
+     *
+     * Avec relance, la règle se donne un nouvel essai dans `relance` minutes,
+     * par le MÊME mécanisme que l'attente : une entrée dans la section
+     * `attentes` de l'état, reprise par traiterAttentes() à son échéance. Ce
+     * n'est pas qu'une économie de code. C'est ce qui donne à la relance, sans
+     * rien écrire de plus, tout ce que l'attente a déjà :
+     *
+     *   - l'annulation quand le déclencheur s'inverse — la personne arrivée
+     *     repart, on n'essaie plus de verrouiller derrière elle ;
+     *   - la reprise après un redémarrage, puisque l'état est un fichier ;
+     *   - la simulation : on attend et on réévalue pour de vrai, seules les
+     *     actions ne partent pas, exactement comme au bout d'une attente ;
+     *   - le repos, contourné à l'échéance comme pour l'attente : la règle n'a
+     *     pas encore agi, elle n'a donc aucune raison d'être au repos.
+     *
+     * La durée maximale se compte depuis le PREMIER essai raté, pas depuis le
+     * déclenchement : une règle qui attend dix minutes puis réessaie pendant
+     * une heure doit réessayer pendant une heure, pas pendant cinquante
+     * minutes. Cet instant voyage d'une relance à la suivante dans l'entrée
+     * d'attente (`relance_depuis`), sans quoi chaque essai repartirait d'une
+     * durée pleine et la règle réessaierait sans fin.
+     *
+     * Le prochain essai n'est posé que s'il tombe ENCORE dans la durée : avec
+     * une relance de 5 min sur 60, le dernier essai a lieu à 60 min et non à
+     * 65. Un intervalle plus long que la durée (20 min sur 10) ne donne donc
+     * aucun nouvel essai, et le journal le dit en ces termes plutôt que de
+     * parler de relances « épuisées » qui n'ont jamais eu lieu.
+     *
+     * Le détail des conditions reste dans l'entrée dans les deux cas : c'est
+     * lui qui montre, ligne par ligne, laquelle a dit non à chaque essai.
+     */
+    private function refuserOuRelancer($_regle, $_entree, $_maintenant, $_contexte) {
+        $entree = $_entree;
+        $relance = isset($_regle['relance']) ? (int) $_regle['relance'] : 0;
+        if ($relance <= 0) {
+            return $this->conclureRegle($entree, 'conditions_non_remplies');
+        }
+        $duree = isset($_regle['relance_max']) ? (int) $_regle['relance_max'] : presenciumRegles::RELANCE_DUREE_DEFAUT;
+        $depuis = (isset($_contexte['relance_depuis']) && (int) $_contexte['relance_depuis'] > 0)
+                ? (int) $_contexte['relance_depuis'] : $_maintenant;
+        $echeance = $_maintenant + $relance * 60;
+
+        if ($echeance <= $depuis + $duree * 60) {
+            $this->etatPoser('attentes', $_regle['id'], array(
+                'echeance'       => $echeance,
+                'pose'           => $_maintenant,
+                'transition'     => isset($_contexte['transition']) ? $_contexte['transition'] : array(),
+                'relance_depuis' => $depuis,
+            ));
+            $entree['detail'] = sprintf(__('conditions non remplies — nouvel essai dans %s min — %s', __FILE__),
+                $relance, $entree['detail']);
+            return $this->conclureRegle($entree, 'relance');
+        }
+
+        if ($depuis >= $_maintenant) {
+            /* Premier essai raté, et pas de place pour un second : l'intervalle
+             * dépasse la durée. C'est un réglage à revoir, pas une relance
+             * épuisée. */
+            $entree['detail'] = sprintf(__('abandon : l\'intervalle de relance (%s min) dépasse sa durée maximale (%s min) — %s', __FILE__),
+                $relance, $duree, $entree['detail']);
+        } else {
+            /* Minutes arrondies au plus proche : le cron passe à la minute
+             * mais pas forcément à la seconde près, et « 59 min » pour une
+             * durée de 60 ferait chercher une erreur de calcul. */
+            $entree['detail'] = sprintf(__('abandon : relances épuisées après %s min — %s', __FILE__),
+                (int) round(($_maintenant - $depuis) / 60), $entree['detail']);
+        }
+        return $this->conclureRegle($entree, 'conditions_non_remplies');
     }
 
     /* Écrit l'entrée au journal et la rend à l'appelant : le compte-rendu que
@@ -724,6 +878,22 @@ trait presenciumExecution {
      * la différence entre « arme cinq minutes après le départ » et « arme cinq
      * minutes après le départ, sauf si quelqu'un revient entre-temps » — la
      * seconde formulation est la seule qui soit utilisable, et c'est celle-ci.
+     *
+     * Les relances (voir refuserOuRelancer()) passent par ici aussi : ce sont
+     * des attentes qui portent en plus `relance_depuis`. Elles sont annulées de
+     * la même façon, et reprises de la même façon à leur échéance.
+     *
+     * Pour les déclencheurs temporels (vide_depuis, occupee_depuis), la reprise
+     * ici ne fait pas double emploi avec jouerRegles() : l'épisode a été marqué
+     * consommé dès le premier essai (transitionTemporelle()), jouerRegles() ne
+     * le représentera donc plus, et c'est ce passage-ci qui porte seul les
+     * essais suivants. Un nouvel épisode, lui, suppose que le foyer a changé
+     * d'état entre-temps — ce qui est justement l'inversion qui annule la
+     * relance en cours.
+     *
+     * Pour une heure fixe, rien ne s'inverse : l'attente va à son terme, et la
+     * relance s'arrête au bout de sa durée — ou quand l'heure suivante de la
+     * liste tombe, qui la remplace (voir plus bas).
      */
     public function traiterAttentes($_maintenant, $_instantane) {
         $rendus = array();
@@ -745,6 +915,60 @@ trait presenciumExecution {
                 }
                 $transition = isset($attente['transition']) ? $attente['transition'] : array();
 
+                /* Une relance n'est qu'une attente de plus : elle porte en outre
+                 * l'instant du premier essai raté, qu'il faut rendre à
+                 * executerRegle() pour que la durée maximale se compte bien
+                 * depuis lui. Absent — une attente ordinaire —, c'est l'essai
+                 * qui vient qui sera le premier. */
+                $relanceDepuis = isset($attente['relance_depuis']) ? (int) $attente['relance_depuis'] : 0;
+
+                /*
+                 * L'HEURE SUIVANTE PREND LE RELAIS.
+                 *
+                 * Une règle à heure fixe ne s'inverse jamais (voir
+                 * presenciumRegles::declencheurInverse()) : sa relance ne
+                 * s'arrête qu'au bout de sa durée. Si l'heure suivante de la
+                 * liste tombe avant — relance de 5 min pendant 60 min, heures
+                 * espacées de 30 min —, deux séries courraient ensemble, et
+                 * la règle pourrait agir deux fois dans la même minute : une
+                 * fois par la relance arrivée à échéance ici, une fois par
+                 * l'heure nouvelle dans jouerRegles(), juste après.
+                 *
+                 * C'est l'heure nouvelle qui gagne : elle est la décision la
+                 * plus récente de l'utilisateur, elle repart d'une série
+                 * entière, et elle se lit « À 22:00 » au journal au lieu d'une
+                 * relance de 21:30 qui aurait agi à 22:00. La série en cours
+                 * est annulée ici, et le journal le dit.
+                 *
+                 * La mémoire n'est PAS avancée ici : c'est jouerRegles(), dans
+                 * ce même passage, qui présente l'heure et la marque jouée.
+                 */
+                if ($regle['declencheur'] === 'heure') {
+                    $memoire = presenciumRegles::memoireHeureFixe($regle, $_maintenant,
+                        $this->etatValeur('temporel', $regle['id']));
+                    $suivante = presenciumRegles::heureFixeDue($regle, $_maintenant, $memoire);
+                    if ($suivante !== null) {
+                        $this->etatPoser('attentes', $regle['id'], null);
+                        $rendus[] = $this->conclureRegle(array(
+                            'genre'       => 'regle',
+                            'simulation'  => $this->enSimulation($regle),
+                            'essai'       => false,
+                            'regle'       => $regle['id'],
+                            'nom'         => $regle['nom'],
+                            'declencheur' => $this->libelleDeclencheur($regle, $transition),
+                            'verdict'     => 'attente_annulee',
+                            'detail'      => sprintf(__('l\'heure suivante (%s) prend le relais', __FILE__), $suivante['heure']),
+                            'heure_fixe'  => isset($transition['heure']) ? (string) $transition['heure'] : '',
+                            'conditions'  => array(),
+                            'actions'     => array(),
+                        ), 'attente_annulee');
+                        continue;
+                    }
+                }
+
+                /* L'inversion s'applique aux relances comme aux attentes : la
+                 * personne arrivée est repartie, il n'y a plus de porte à
+                 * verrouiller derrière elle. */
                 if (presenciumRegles::declencheurInverse($regle, $transition, $_instantane)) {
                     $this->etatPoser('attentes', $regle['id'], null);
                     $rendus[] = $this->conclureRegle(array(
@@ -753,9 +977,11 @@ trait presenciumExecution {
                         'essai'       => false,
                         'regle'       => $regle['id'],
                         'nom'         => $regle['nom'],
-                        'declencheur' => $this->libelleDeclencheur($regle),
+                        'declencheur' => $this->libelleDeclencheur($regle, $transition),
                         'verdict'     => 'attente_annulee',
-                        'detail'      => __('le déclencheur s\'est inversé pendant l\'attente', __FILE__)
+                        'detail'      => (($relanceDepuis > 0)
+                                          ? __('le déclencheur s\'est inversé pendant les relances', __FILE__)
+                                          : __('le déclencheur s\'est inversé pendant l\'attente', __FILE__))
                                        . ' — ' . $this->detailPresence($_maintenant, $_instantane),
                         'conditions'  => array(),
                         'actions'     => array(),
@@ -769,11 +995,15 @@ trait presenciumExecution {
                 /* Effacée AVANT d'agir : si une action lève, l'attente ne doit
                  * pas se rejouer à chaque minute jusqu'à la fin des temps. */
                 $this->etatPoser('attentes', $regle['id'], null);
-                $rendus[] = $this->executerRegle($regle, $_maintenant, array(
+                $contexte = array(
                     'transition'       => $transition,
                     'instantane'       => $_instantane,
                     'attente_terminee' => true,
-                ));
+                );
+                if ($relanceDepuis > 0) {
+                    $contexte['relance_depuis'] = $relanceDepuis;
+                }
+                $rendus[] = $this->executerRegle($regle, $_maintenant, $contexte);
             } catch (Throwable $e) {
                 log::add(__CLASS__, 'error', $this->getHumanName() . ' — ' . $regle['nom'] . ' : ' . $e->getMessage());
             }
@@ -782,9 +1012,11 @@ trait presenciumExecution {
     }
 
     /* Le libellé du déclencheur ; les noms ne sont chargés que si la règle
-     * nomme quelqu'un. */
-    private function libelleDeclencheur($_regle) {
+     * nomme quelqu'un. La transition, quand on l'a, dit laquelle des heures
+     * fixes est tombée (« À 21:30 » plutôt que la liste entière). */
+    private function libelleDeclencheur($_regle, $_transition = null) {
         $nominative = (isset($_regle['personne']) && (int) $_regle['personne'] > 0);
-        return presenciumRegles::libelleDeclencheur($_regle, $nominative ? $this->nomsPersonnes() : array());
+        return presenciumRegles::libelleDeclencheur($_regle, $nominative ? $this->nomsPersonnes() : array(),
+                                                    is_array($_transition) ? $_transition : null);
     }
 }

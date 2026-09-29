@@ -19,7 +19,8 @@
 /*
  * Le moteur d'un foyer : sa composition, l'instantané de qui est là, le
  * rafraîchissement sous verrou, la publication des commandes, les
- * déclencheurs temporels et la phrase qui dit qui était là.
+ * déclencheurs temporels (durées et heures fixes) et la phrase qui dit qui
+ * était là.
  *
  * Trait de la classe presencium, chargé par presencium.class.php : voir
  * l'en-tête de ce fichier-là.
@@ -408,6 +409,12 @@ trait presenciumFoyerMoteur {
      * journal d'une ligne par minute, ce qui le rendrait illisible au moment où
      * on en a besoin.
      *
+     * Qui veut qu'elle soit réessayée lui donne une RELANCE : les nouveaux
+     * essais passent alors par les attentes (traiterAttentes()), à l'intervalle
+     * choisi et pendant une durée bornée — jamais par ici, puisque l'épisode
+     * reste consommé. C'est ce qui interdit la double exécution : un seul des
+     * deux chemins peut présenter la règle pour un épisode donné.
+     *
      * « Présentée à l'exécution » se prend au mot : jouerRegles() écarte les
      * règles décochées et celles encore au repos AVANT d'appeler cette méthode,
      * pour qu'elles ne consomment pas l'épisode. Une règle recochée en pleine
@@ -444,6 +451,52 @@ trait presenciumFoyerMoteur {
         $this->etatPoser('temporel', $_regle['id'], $debut);
 
         return array('type' => $_regle['declencheur'], 'personne' => 0);
+    }
+
+    /*
+     * Le déclencheur d'une règle « À heure fixe », ou null.
+     *
+     * Le calcul est dans presenciumRegles (memoireHeureFixe(), heureFixeDue()),
+     * pur et éprouvé hors ligne ; ici, seulement la lecture et l'écriture de
+     * la mémoire, dans la section `temporel` de l'état du foyer, sous
+     * l'identifiant de la règle — comme l'épisode de vide_depuis. L'état est
+     * un fichier réécrit à chaque changement : un redémarrage de Jeedom à
+     * 21:31 ne fait donc pas rejouer 21:30, et le rattrapage borné fait jouer
+     * 21:30 si le redémarrage l'avait fait manquer.
+     *
+     * La mémoire est d'abord mise en place — premier passage après
+     * l'enregistrement de la règle, ou liste d'heures modifiée — et c'est ce
+     * premier passage qui fixe l'instant à partir duquel les heures comptent :
+     * pas de rétroactivité.
+     *
+     * Puis l'heure due est MARQUÉE JOUÉE AVANT d'être présentée, comme
+     * l'épisode de transitionTemporelle() et le repos d'executerRegle() : si
+     * une action lève, ou si le processus meurt au milieu, l'heure ne se
+     * rejoue pas à chaque minute des cinq de rattrapage. Une heure présentée
+     * est une heure consommée, quel que soit le verdict — y compris
+     * « conditions non remplies » : c'est la RELANCE qui réessaie, pas le
+     * rattrapage.
+     *
+     * La transition rendue porte l'heure (« 21:30 ») pour le libellé du
+     * journal, et son échéance en horodatage : elle est mémorisée avec une
+     * attente ou une relance, et le journal de fin d'attente peut encore dire
+     * « À 21:30 » à 21:40.
+     */
+    private function transitionHeureFixe($_regle, $_maintenant) {
+        $lue = $this->etatValeur('temporel', $_regle['id']);
+        $memoire = presenciumRegles::memoireHeureFixe($_regle, $_maintenant, $lue);
+        $due = presenciumRegles::heureFixeDue($_regle, $_maintenant, $memoire);
+        if ($due !== null) {
+            $memoire['echeance'] = (int) $due['echeance'];
+        }
+        if ($memoire !== $lue) {
+            $this->etatPoser('temporel', $_regle['id'], $memoire);
+        }
+        if ($due === null) {
+            return null;
+        }
+        return array('type' => 'heure', 'personne' => 0,
+                     'heure' => $due['heure'], 'echeance' => (int) $due['echeance']);
     }
 
     /* Les noms des personnes du foyer, indexés par identifiant : ce que

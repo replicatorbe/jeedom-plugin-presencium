@@ -354,14 +354,50 @@ show up as such in the log: write what the rule does in it, not its number.
 | **Someone leaves** | a person becomes absent — likewise. |
 | **Empty for** | the house has been empty for the number of minutes you give. |
 | **Occupied for** | it has been occupied for that number of minutes. |
+| **At a fixed time** | the clock reaches one of the times you list (1 to 24, for instance 21:30, 22:00, 22:30) — every day, once per time. |
 
 The first five are **transitions**: they only fire at the moment the state
-changes, never while it lasts. The last two are **durations**: they fire once,
+changes, never while it lasts. The next two are **durations**: they fire once,
 when the counter reaches the value.
 
-And all of them are based on the **confirmed** presence, not on the raw signal.
+And those seven are based on the **confirmed** presence, not on the raw signal.
 That is what everything above exists for: "the last one leaves" means fifteen
 minutes of silence have gone by, not that a tag hiccuped.
+
+#### At a fixed time
+
+The last one stands apart: it does not look at presence at all, it looks at the
+clock. It is for what gets decided **at a given time, depending on the state of
+the house** — switching the alarm to night mode in the evening, closing the
+shutters, turning off what was left on. The state of the house is what the
+conditions say ("the house is occupied", "the TV is off"); the trigger only
+sets the appointments. See the **Automatic night mode** example below.
+
+- **Once a day per time.** Each time in the list fires only once a day, even if
+  the cron and the listener both run in the same minute. The time played is
+  remembered in the household's state (`data/`), so it survives a reboot.
+- **Five minutes of catch-up, no more.** If Jeedom missed the minute — a late
+  cron, a reboot —, the time is played on the next run, provided it happens
+  within five minutes. Beyond that it is lost: the house has had time to change,
+  and the next time in the list takes over. Two times missed within the same
+  window give a single firing.
+- **Midnight.** 00:00 and 00:30 belong to the day that begins: they fire every
+  night, and a time from the previous day is never caught up after midnight
+  (23:59 missed is not played at 00:02).
+- **No retroactivity.** A time already past when the rule is saved is not
+  played: a rule created at 22:10 waits for 22:30, not 22:00. The same goes for
+  a time added to the list afterwards.
+- **Disabled or cooling down, the time is used up.** A time is an instant, not
+  a state: if the rule is disabled or in its cooldown at 22:00, the log says
+  so, and ticking the rule again at 22:02 does not replay 22:00.
+- **Nothing reverses.** For the other triggers, a delay is canceled when the
+  trigger reverses (somebody comes back). A time does not reverse: the delay
+  runs to its end, then the **conditions** are read again. If the house emptied
+  in the meantime, it is the condition "Household presence == 1" that says no
+  — write it.
+- The **Who** field makes no sense here and is not offered. The time range and
+  the days remain plain filters; at 00:30 on a Saturday, without a time range,
+  it is Saturday.
 
 ### If — the conditions
 
@@ -398,6 +434,60 @@ not do the same job. The departure delay answers the sensor that lies; the
 rule's delay answers real life: you leave, you come back because you forgot
 something, you leave again. Five minutes of delay on a rule that arms, and the
 round trip fires nothing — the log records the delay, then its cancellation.
+
+### And if it is not the right moment — the retry
+
+When it is time to act — right away, or at the end of the delay —, a rule whose
+condition line says no gives up. That is the right behaviour for a condition
+describing a lasting situation ("the alarm is not already enabled"), the wrong
+one for a condition describing a passing moment.
+
+The typical example: a rule "Someone arrives", with a 10-minute delay, the
+conditions "no motion on the South camera", "no motion on the East camera" and
+"the door is not locked", and the action "lock the door". If somebody still
+walks past a camera at the tenth minute, the rule gives up, and the door is
+never locked again.
+
+The **Retry if the conditions are not met** setting gives the rule a new try
+every *N* minutes, for a maximum duration (60 minutes by default). With "every
+5 min for 60 min", the door is locked at the first try where both cameras are
+quiet — at 15, 20 or 45 minutes — and the rule gives up after an hour if the
+quiet never comes back.
+
+- The duration counts from the **first failed try**, not from the trigger: a
+  10-minute delay followed by an hour of retries does retry for an hour. The
+  last try falls within that duration, not after it.
+- A retry **is canceled like the delay**: if the trigger reverses — the person
+  who arrived leaves again, the house empties again —, the rule stops retrying,
+  and the log says so.
+- Only the **condition lines** are retried. A time range or a day of the week
+  says *when* the rule is allowed to act: a rule that fires outside its range
+  does not wait for it to open, and a retry that falls outside it stops there.
+- The **cooldown** does not get in the way: it is only set when the rule acts.
+  Once the rule has acted, the pending retry is cleared.
+- In **simulation**, the retry runs for real — waiting, re-evaluating, logging
+  — and only the actions are not sent.
+- The **Test** button never retries: it runs the actions whatever the
+  conditions say, that is its job.
+
+Every failed try leaves a **Retry scheduled** line in the log, with the
+conditions one by one: try after try, you see which one said no. The last
+refusal is written **Conditions not met**, mentioning that the rule gave up. An
+interval longer than the duration would leave room for no further try: the rule
+window refuses it.
+
+For "the house has been empty for" and "the house has been occupied for", the
+retry is also the only way to try again during the same absence: without it, a
+rule whose conditions are false at the minute the duration is reached waits for
+the next absence.
+
+For **At a fixed time**, the retry is the way to say "at 21:30, or as soon as
+the last lamp is off". Since a time does not reverse, the series only stops at
+the end of its duration — or when the **next time** in the list fires: that one
+cancels the running series (the log writes *Delay canceled — the next time takes
+over*) and starts a fresh series of its own. So pick a duration shorter than the
+gap between two times (25 minutes for times 30 minutes apart): each time then
+gets its full series, and the rule never acts twice for the same time.
 
 ### And not too often — the cooldown
 
@@ -513,23 +603,27 @@ day when nothing must be lost.
 
 The **CSV export** serves the simulation campaign: a week of observation reads
 better in a spreadsheet, where you sort by verdict and count, than in a web page
-you scroll through.
+you scroll through. Its last column, `declencheur`, says for each entry what
+fired it — and, for a fixed-time rule, which of the times: that is how you
+count at what time night mode really arms.
 
 It is written to a file of the plugin's own, not to Jeedom's logs: it survives a
 reboot, it does not get drowned by the rest of the installation, and it does not
 grow without end — the oldest entries fall off by themselves.
 
-A rule entry carries the time, the rule's name, the trigger in plain words, the
-verdict, the figures that explain it, the list of conditions with their result
+A rule entry carries the time, the rule's name, the trigger in plain words — for
+a fixed-time rule, the time that fired it, "At 21:30", with a clock in front,
+even at the end of a delay or a retry —, the verdict, the figures that explain it, the list of conditions with their result
 one by one, and the list of actions with theirs.
 
 | Verdict | What it means |
 |---|---|
 | **Fired** | the rule acted. The actions read "executed", or "simulated" if the plugin was only watching. |
-| **Conditions not met** | the trigger fired, a condition line said no. The log says which one. |
+| **Conditions not met** | the trigger fired, a condition line said no. The log says which one — and, for a rule with a retry, that the new tries are exhausted. |
 | **Outside the time range** | the time range or the day of the week did not allow it. |
 | **Waiting** | the delay's countdown has started. |
-| **Delay canceled** | the trigger reversed before the end: somebody came back. |
+| **Retry scheduled** | a condition line said no, but the rule has a retry: it will try again in the number of minutes shown. |
+| **Delay canceled** | the trigger reversed before the end — of the delay or of the retries: somebody came back, or left again. For a fixed-time rule, it is the next time in the list that replaced the running series. |
 | **Cooldown** | the rule acted less than its cooldown ago. |
 | **Disabled** | the rule exists but its box is unticked. |
 | **Failed** | an action did not go through — including a command that can no longer be found. The error message is there. |
@@ -543,12 +637,12 @@ Reading that log now and then is the only maintenance the plugin asks for.
 ## The Health page
 
 Jeedom's **Health** page answers "is everything all right?" at a glance. The
-plugin counts only things there that do not show anywhere else — fourteen checks,
+plugin counts only things there that do not show anywhere else — fifteen checks,
 not one of them decorative:
 
 | Check | What it catches |
 |---|---|
-| Last evaluation | the core cron no longer runs. This is the failure that stops everything: departure delays never expire, rule waits never end, and the commands keep their last value — which looks right. While this line is red, the other thirteen mean nothing |
+| Last evaluation | the core cron no longer runs. This is the failure that stops everything: departure delays never expire, rule waits never end, and the commands keep their last value — which looks right. While this line is red, the other fourteen mean nothing |
 | People tracked, Households | the head count, to spot a forgotten device |
 | People with no source | a person created and then never finished. It looks perfectly normal and stays absent for life |
 | Missing sources | the command has been deleted since. The person keeps their last state until another source is picked |
@@ -558,6 +652,7 @@ not one of them decorative:
 | Households with no person | a household that is empty for good, whose departure rules fire into the void |
 | Data folder writable | without it the log is not written — and a simulation campaign leaves no trace at all |
 | Dead references in the rules | an action that no longer points at anything. Those fail silently |
+| Fixed-time rules without a time | an enabled "At a fixed time" rule with no valid time. It will never fire, and nothing else says so |
 | Silent tags | a tag that claims to be present but has not emitted for a long time. See below: this is the failure that freezes a house on “occupied” forever |
 | People outside any household | they are followed, but no rule can fire on them |
 | Simulation mode | what is running without acting right now |
@@ -567,7 +662,7 @@ nothing: the rule fires, the log records "Fired", and nothing happens. And a
 forgotten simulation is the plugin's quietest failure: everything works, the log
 fills up, the states are right, and nothing acts.
 
-## Two complete examples
+## Three complete examples
 
 ### Arming when leaving
 
@@ -626,7 +721,96 @@ What each line prevents:
   together, or a signal shaking itself on arrival, must produce one single
   disarming.
 
-And the advice that holds for both: write them with the household's
+### Automatic night mode
+
+In the evening, when the house is ready for bed — somebody is home, the alarm
+is not armed yet, the TV and the lamps are off —, the alarm switches to night
+mode. Without anyone thinking about it, and without arming it on somebody still
+watching a film.
+
+| Setting | Value |
+|---|---|
+| **Name** | Automatic night mode |
+| **When** | At a fixed time — 21:30, 22:00, 22:30, 23:00, 00:00, 00:30 |
+| **After** | 0 minutes |
+| **Retry** | every 5 minutes, for 25 minutes (optional) |
+| **No more often than** | 0 minutes |
+| **Time range** | none |
+| **Days** | all seven |
+| **Conditions** | `[Home][Household][Presence]` `==` `1` |
+| | `[Home][Alarm][Armed]` `==` `0` |
+| | `[Living room][TV][On]` `==` `0` |
+| | `[Living room][Lamps][State]` `==` `0` (one line per lamp) |
+| **Action** | `[Home][Alarm][Night mode]` |
+
+What each line does:
+
+- **Six times rather than one.** Nobody goes to bed at the same time every
+  night. At 21:30, if everything is off, the alarm switches to night mode;
+  otherwise the rule comes back at 22:00, at 22:30… until 00:30. The first
+  appointment where the house is ready is the right one.
+- **"Household presence == 1"** keeps an empty house out of night mode — that
+  one must be armed for real, by the *Arm when leaving* rule. It is also the
+  line that says no if the house empties during a delay: a time does not
+  reverse, the conditions decide.
+- **"Armed == 0"** means that once the alarm is in night mode, the following
+  times do not command it again: they stop on *Conditions not met*, and the
+  log says it was the already-armed alarm that said no. That is why no cooldown
+  is needed — a cooldown would even get in the way: disarmed at 22:10 to walk
+  the dog, the alarm must be able to go back to night mode at 22:30.
+- **The TV and the lamps** are the sign that someone is still up. If the living
+  room has no state command per lamp, a single line on a command that sums them
+  up (a virtual "Living room lamps on") will do.
+- **The retry (optional)** keeps the rule watching between two times: at 21:30
+  a lamp is still on, the rule tries again at 21:35, 21:40… and switches to
+  night mode as soon as it is off, instead of waiting for 22:00. Twenty-five
+  minutes, not sixty: the series ends before the next time, which starts a
+  series of its own. Without a retry, the rule gives up at the first refusal
+  and simply waits for the next time — simpler, and half an hour late at worst.
+
+The log then reads like the evening: "At 21:30 — Retry scheduled (Lamps = 1)",
+"At 21:30 — Retry scheduled", "At 21:30 — Fired" at 21:45, then "At 22:00 —
+Conditions not met (Armed = 1)", and so on. For this rule even more than for
+the others, leave it in simulation for a few evenings: that is when you find
+the bedside lamp you had forgotten, or the TV that reports "0" on standby.
+
+The same rule, written directly into the household's configuration (what the
+editor does when you click *Apply*, then *Save*):
+
+```json
+{
+    "id": "r-nuit01",
+    "nom": "Automatic night mode",
+    "actif": 1,
+    "declencheur": "heure",
+    "personne": 0,
+    "minutes": 0,
+    "heures_fixes": ["00:00", "00:30", "21:30", "22:00", "22:30", "23:00"],
+    "attente": 0,
+    "repos": 0,
+    "relance": 5,
+    "relance_max": 25,
+    "simulation": 1,
+    "conditions": {
+        "heures": {"actif": 0, "de": "00:00", "a": "23:59"},
+        "jours": [1, 2, 3, 4, 5, 6, 7],
+        "lignes": [
+            {"cmd": 101, "operateur": "==", "valeur": "1", "nom": "[Home][Household][Presence]"},
+            {"cmd": 102, "operateur": "==", "valeur": "0", "nom": "[Home][Alarm][Armed]"},
+            {"cmd": 103, "operateur": "==", "valeur": "0", "nom": "[Living room][TV][On]"},
+            {"cmd": 104, "operateur": "==", "valeur": "0", "nom": "[Living room][Lamps][State]"}
+        ]
+    },
+    "actions": [
+        {"cmd": "#[Home][Alarm][Night mode]#", "cmd_id": 105, "options": {}}
+    ]
+}
+```
+
+The `cmd` and `cmd_id` numbers are those of your installation. The times can be
+written in any order: they are sorted and de-duplicated when saved.
+
+And the advice that holds for all three: write them with the household's
 **simulation** turned on, let them live for three days, read the log. An arming
 rule put into production without having been read is a rule that will introduce
 itself to you one evening, at 10 p.m., with a siren.

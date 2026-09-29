@@ -1,5 +1,19 @@
 # Changelog
 
+## Upcoming
+
+- **New "At a fixed time" trigger.** A list of 1 to 24 times (21:30, 22:00…):
+  the rule comes up at each of them, once a day, and its conditions decide.
+  Five minutes of catch-up if Jeedom missed the minute, never for a time from
+  the previous day, never for a time already past when the rule was saved.
+  Conditions, delay, retry, cooldown, simulation, log ("At 21:30") and the
+  *Test* button apply as everywhere else. Full example in the documentation:
+  automatic night mode.
+- **Retrying the conditions.** A rule whose condition says no can try again
+  every *N* minutes for a bounded duration, instead of giving up.
+- The log's CSV export gains a `declencheur` column; the Health page, a
+  "Fixed-time rules without a time" line.
+
 ## 1.3
 
 A full review of the plugin, aimed at finding whatever could arm the alarm on

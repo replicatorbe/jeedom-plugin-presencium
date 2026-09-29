@@ -60,6 +60,10 @@ foreach (array(
     'depart'          => __('Quelqu\'un part', __FILE__),
     'vide_depuis'     => __('La maison est vide depuis…', __FILE__),
     'occupee_depuis'  => __('La maison est occupée depuis…', __FILE__),
+    /* Le seul qui ne parle pas de présence, rangé en dernier : on le cherche
+       quand on sait déjà qu'on le veut, et il ne doit pas s'intercaler entre
+       des déclencheurs qui se comprennent ensemble. */
+    'heure'           => __('À heure fixe…', __FILE__),
 ) as $presenciumCle => $presenciumTexte) {
     $presenciumDeclencheursTextes[] = array('cle' => $presenciumCle, 'texte' => $presenciumTexte);
 }

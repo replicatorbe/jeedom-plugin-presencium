@@ -64,7 +64,7 @@ $presenciumJours = array(1 => '{{Lun}}', 2 => '{{Mar}}', 3 => '{{Mer}}', 4 => '{
             <div class="form-group">
                 <label class="col-sm-3 control-label">
                     {{Quand}}
-                    <sup><i class="fas fa-question-circle" title="{{Le moment qui déclenche la règle. « Le premier arrive » et « Le dernier part » ne se produisent qu'au passage de la maison de vide à occupée et inversement, alors que « Quelqu'un arrive » vaut pour chaque personne. Les deux derniers ne sont pas des passages mais des durées : ils se vérifient chaque minute.}}"></i></sup>
+                    <sup><i class="fas fa-question-circle" title="{{Le moment qui déclenche la règle. « Le premier arrive » et « Le dernier part » ne se produisent qu'au passage de la maison de vide à occupée et inversement, alors que « Quelqu'un arrive » vaut pour chaque personne. « Vide depuis » et « Occupée depuis » ne sont pas des passages mais des durées : ils se vérifient chaque minute. « À heure fixe » ne regarde pas la présence du tout : il tombe aux heures que vous listez, une fois par jour chacune.}}"></i></sup>
                 </label>
                 <div class="col-sm-9">
                     <select class="form-control" id="sel_presenciumRegleDeclencheur"></select>
@@ -111,6 +111,29 @@ $presenciumJours = array(1 => '{{Lun}}', 2 => '{{Mar}}', 3 => '{{Mer}}', 4 => '{
                 </div>
                 <div class="col-sm-5">
                     <span class="help-block" style="margin:0;">{{De 1 minute à 10080 (une semaine). Un champ vide est refusé à la validation : « vide depuis 0 min » serait vrai en permanence.}}</span>
+                </div>
+            </div>
+
+            <!-- Visible seulement pour « À heure fixe ». Les heures vivent dans
+                 la règle courante du JS (heures_fixes) et sont dessinées en
+                 étiquettes : une liste qu'on relit d'un coup d'œil, où l'heure
+                 en trop se voit. Le champ ne sert qu'à en ajouter une ; une
+                 heure tapée mais pas ajoutée est reprise à la validation plutôt
+                 que perdue (presencium.regle.js). -->
+            <div class="form-group" id="div_presenciumRegleHeuresFixes" style="display:none;">
+                <label class="col-sm-3 control-label">
+                    {{Heures}}
+                    <sup><i class="fas fa-question-circle" title="{{Les heures auxquelles la règle se déclenche, chaque jour — de 1 à 24. Chacune tombe une seule fois par jour ; si Jeedom a manqué la minute, elle est rattrapée pendant cinq minutes, jamais au-delà. Une heure déjà passée quand vous enregistrez la règle n'est pas jouée : elle attend le lendemain. 00:00 et 00:30 appartiennent au jour qui commence. Les conditions, l'attente, la relance et le repos s'appliquent comme pour tout autre déclencheur ; seule l'annulation par inversion n'existe pas — une heure ne s'inverse pas, c'est aux conditions de dire si la maison a changé.}}"></i></sup>
+                </label>
+                <div class="col-sm-9">
+                    <div id="div_presenciumRegleHeuresListe" style="margin-bottom:6px;"></div>
+                    <div class="input-group" style="max-width:280px;">
+                        <input type="time" class="form-control roundedLeft" id="in_presenciumRegleHeureFixe">
+                        <span class="input-group-btn">
+                            <a class="btn btn-default roundedRight" id="bt_presenciumAjouterHeure" title="{{Ajouter cette heure à la liste}}"><i class="fas fa-plus"></i> {{Ajouter}}</a>
+                        </span>
+                    </div>
+                    <span class="help-block" style="margin:4px 0 0 0;">{{Triées et dédoublonnées automatiquement. Pour un armement de nuit : 21:30, 22:00, 22:30, 23:00, 00:00, 00:30, avec les conditions qui disent que la maison est prête à dormir.}}</span>
                 </div>
             </div>
         </fieldset>
@@ -225,6 +248,35 @@ $presenciumJours = array(1 => '{{Lun}}', 2 => '{{Mar}}', 3 => '{{Mer}}', 4 => '{
                 </div>
                 <div class="col-sm-6">
                     <span class="help-block" style="margin:0;">{{L'annulation est écrite au journal : on voit combien de fois la règle a failli partir pour rien.}}</span>
+                </div>
+            </div>
+
+            <!-- La relance : deux champs et non un. L'intervalle seul ne dit pas
+                 quand s'arrêter, et une règle qui réessaie sans fin agit un jour
+                 sur une situation que plus personne n'a en tête. La durée n'a
+                 de sens qu'avec un intervalle : elle est grisée tant que
+                 l'intervalle vaut zéro (presencium.regle.js). -->
+            <div class="form-group">
+                <label class="col-sm-3 control-label">
+                    {{Réessayer si les conditions ne sont pas remplies}}
+                    <sup><i class="fas fa-question-circle" title="{{Au moment d'agir, si une ligne de condition dit non, la règle réessaie toutes les N minutes au lieu d'abandonner — tant que le déclencheur ne s'inverse pas, et pas plus longtemps que la durée donnée à droite. C'est ce qui permet de reverrouiller la porte après une arrivée dès que la caméra ne voit plus personne, plutôt que jamais parce qu'il y avait encore du mouvement à la dixième minute. La plage horaire, elle, ne se réessaie pas. Zéro pour abandonner au premier refus.}}"></i></sup>
+                </label>
+                <div class="col-sm-3">
+                    <div class="input-group">
+                        <span class="input-group-addon roundedLeft">{{toutes les}}</span>
+                        <input type="number" min="0" max="120" step="1" class="form-control" id="in_presenciumRegleRelance" placeholder="0">
+                        <span class="input-group-addon roundedRight">{{min}}</span>
+                    </div>
+                </div>
+                <div class="col-sm-3">
+                    <div class="input-group">
+                        <span class="input-group-addon roundedLeft">{{pendant}}</span>
+                        <input type="number" min="1" max="720" step="1" class="form-control" id="in_presenciumRegleRelanceMax" placeholder="60">
+                        <span class="input-group-addon roundedRight">{{min}}</span>
+                    </div>
+                </div>
+                <div class="col-sm-3">
+                    <span class="help-block" style="margin:0;">{{Comptée depuis le premier essai raté. Chaque essai est écrit au journal, avec la condition qui a dit non.}}</span>
                 </div>
             </div>
 

@@ -200,6 +200,12 @@ class presencium extends eqLogic {
      *  - l'attente d'une règle (« arme 5 minutes après le départ ») ;
      *  - les déclencheurs `vide_depuis` et `occupee_depuis`, qui sont des
      *    durées et non des événements ;
+     *  - le déclencheur `heure` (« À heure fixe ») : c'est ce passage-ci qui
+     *    voit tomber 21:30. Il n'a pas de cron à lui — un cron programmé
+     *    par règle serait à recréer à chaque modification, et à nettoyer à
+     *    chaque suppression — et la minute suffit : c'est la résolution de
+     *    l'heure qu'on saisit. Un passage manqué est rattrapé pendant cinq
+     *    minutes (presenciumRegles::RATTRAPAGE_HEURE) ;
      *  - et le rattrapage d'un listener perdu — processus tué, base occupée,
      *    écouteur effacé par listener::clean() — dont rien d'autre ne
      *    s'apercevrait.

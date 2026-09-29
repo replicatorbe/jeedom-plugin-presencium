@@ -51,6 +51,10 @@ var presenciumVerdicts = {
   hors_horaire: { classe: 'default', texte: '{{Hors horaire}}' },
   en_attente: { classe: 'info', texte: '{{En attente}}' },
   attente_annulee: { classe: 'info', texte: '{{Attente annulée}}' },
+  /* Les conditions ont dit non, mais la règle réessaiera : en information, à
+     côté de l'attente dont c'est le prolongement, et non en gris avec les
+     refus définitifs — la règle n'a pas encore renoncé. */
+  relance: { classe: 'info', texte: '{{Nouvel essai prévu}}' },
   repos: { classe: 'default', texte: '{{Anti-répétition}}' },
   desactivee: { classe: 'default', texte: '{{Désactivée}}' },
   echec: { classe: 'danger', texte: '{{Échec}}' },
@@ -179,6 +183,18 @@ function presenciumEntreeJournal(_entree) {
   }
   if (init(entree.declencheur, '') !== '') {
     var declencheur = presenciumText('span', 'text-muted', ' — ' + entree.declencheur)
+    /* Une règle à heure fixe a agi sans que personne n'arrive ni ne parte :
+       l'horloge le dit avant qu'on ait lu la phrase, et c'est la première
+       question qu'on se pose devant une alarme passée en mode nuit « toute
+       seule ». L'heure vient du champ `heure_fixe` de l'entrée, pas d'une
+       analyse du libellé, qui est traduit. */
+    if (init(entree.heure_fixe, '') !== '') {
+      var horloge = document.createElement('i')
+      horloge.className = 'far fa-clock'
+      horloge.style.marginLeft = '5px'
+      horloge.setAttribute('title', '{{Déclenchée par l\'horloge, à}} ' + entree.heure_fixe)
+      titre.appendChild(horloge)
+    }
     titre.appendChild(declencheur)
   }
   if (titre.childNodes.length > 0) { bloc.appendChild(titre) }

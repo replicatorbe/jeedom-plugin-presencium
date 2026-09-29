@@ -368,14 +368,53 @@ pas son numéro.
 | **Quelqu'un part** | une personne devient absente — idem. |
 | **Vide depuis** | la maison est vide depuis le nombre de minutes que vous donnez. |
 | **Occupée depuis** | elle est occupée depuis ce nombre de minutes. |
+| **À heure fixe** | l'horloge atteint l'une des heures que vous listez (de 1 à 24, par exemple 21:30, 22:00, 22:30) — chaque jour, une fois par heure. |
 
 Les cinq premiers sont des **bascules** : ils ne tombent qu'au moment où l'état
-change, jamais tant qu'il dure. Les deux derniers sont des **durées** : ils
+change, jamais tant qu'il dure. Les deux suivants sont des **durées** : ils
 tombent une fois, quand le compteur atteint la valeur.
 
-Et tous se fondent sur la présence **confirmée**, pas sur le signal brut. C'est
-la raison d'être de tout ce qui précède : « le dernier part » veut dire que
-quinze minutes de silence se sont écoulées, pas que la balise a hoqueté.
+Et ces sept-là se fondent sur la présence **confirmée**, pas sur le signal brut.
+C'est la raison d'être de tout ce qui précède : « le dernier part » veut dire
+que quinze minutes de silence se sont écoulées, pas que la balise a hoqueté.
+
+#### À heure fixe
+
+Le dernier est à part : il ne regarde pas la présence du tout, il regarde
+l'horloge. Il sert à ce qui se décide **à heure dite, selon l'état de la
+maison** — passer l'alarme en mode nuit le soir, fermer les volets, couper ce
+qui est resté allumé. L'état de la maison, ce sont les conditions qui le disent
+(« la maison est occupée », « la télé est éteinte ») ; le déclencheur, lui, ne
+fait que donner les rendez-vous. Voir l'exemple **Mode nuit automatique** plus
+bas.
+
+- **Une fois par jour et par heure.** Chaque heure de la liste tombe une seule
+  fois par jour, même si le cron et l'écouteur passent tous deux dans la même
+  minute. L'heure jouée est mémorisée dans l'état du foyer (`data/`), elle
+  survit donc à un redémarrage.
+- **Un rattrapage de cinq minutes, pas plus.** Si Jeedom a manqué la minute —
+  un cron en retard, un redémarrage —, l'heure est jouée au passage suivant, à
+  condition qu'il ait lieu dans les cinq minutes. Au-delà, elle est perdue : la
+  maison a eu le temps de changer, et c'est l'heure suivante de la liste qui
+  prend le relais. Deux heures manquées dans la même fenêtre ne font qu'un
+  déclenchement.
+- **Minuit.** 00:00 et 00:30 appartiennent au jour qui commence : elles tombent
+  chaque nuit, et une heure de la veille n'est jamais rattrapée après minuit
+  (23:59 manquée n'est pas jouée à 00:02).
+- **Pas de rétroactivité.** Une heure déjà passée quand la règle est
+  enregistrée n'est pas jouée : une règle créée à 22:10 attend 22:30, pas
+  22:00. Même chose pour une heure ajoutée à la liste après coup.
+- **Décochée ou au repos, l'heure est consommée.** Une heure est un instant,
+  pas un état : si la règle est désactivée ou au repos à 22:00, le journal le
+  dit, et recocher la règle à 22:02 ne rejoue pas 22:00.
+- **Rien ne s'inverse.** Pour les autres déclencheurs, une attente s'annule si
+  le déclencheur s'inverse (quelqu'un revient). Une heure, elle, ne
+  s'inverse pas : l'attente va à son terme, puis les **conditions** sont
+  relues. Si la maison s'est vidée entre-temps, c'est la condition « Présence
+  du foyer == 1 » qui dit non — écrivez-la.
+- Le champ **Qui** n'a pas de sens ici et n'est pas proposé. La plage horaire
+  et les jours restent de simples filtres ; à 00:30 un samedi, sans plage
+  horaire, on est samedi.
 
 ### Si — les conditions
 
@@ -414,6 +453,63 @@ même travail. Le délai de départ répond au capteur qui ment ; l'attente rép
 la vie réelle : on part, on revient parce qu'on a oublié quelque chose, on
 repart. Cinq minutes d'attente sur une règle qui arme, et l'aller-retour ne
 déclenche rien — le journal note l'attente, puis son annulation.
+
+### Et si ce n'est pas le moment — la relance
+
+Au moment d'agir — tout de suite, ou à la fin de l'attente —, une règle dont une
+ligne de condition dit non abandonne. C'est le bon comportement pour une
+condition qui décrit une situation durable (« l'alarme n'est pas déjà en
+service »), le mauvais pour une condition qui décrit un instant passager.
+
+L'exemple type : une règle « Quelqu'un arrive », avec une attente de 10 minutes,
+les conditions « pas de mouvement sur la caméra Sud », « pas de mouvement sur la
+caméra Est » et « la porte n'est pas verrouillée », et l'action « verrouiller la
+porte ». Si quelqu'un passe encore devant une caméra à la dixième minute, la
+règle abandonne, et la porte ne se reverrouille jamais.
+
+Le réglage **Réessayer si les conditions ne sont pas remplies** donne à la règle
+un nouvel essai toutes les *N* minutes, pendant une durée maximale (60 minutes
+par défaut). Avec « toutes les 5 min pendant 60 min », la porte est verrouillée
+au premier essai où les deux caméras sont calmes — à 15, 20 ou 45 minutes — et
+la règle renonce après une heure si le calme ne revient pas.
+
+- La durée se compte depuis le **premier essai raté**, pas depuis le
+  déclenchement : une attente de 10 minutes suivie d'une heure de relance
+  réessaie bien pendant une heure. Le dernier essai tombe dans cette durée, pas
+  après elle.
+- La relance **s'annule comme l'attente** : si le déclencheur s'inverse —
+  la personne arrivée repart, la maison se vide de nouveau —, la règle cesse de
+  réessayer, et le journal le note.
+- Seules les **lignes de condition** sont réessayées. Une plage horaire ou un
+  jour de la semaine dit *quand* la règle a le droit d'agir : une règle arrivée
+  hors de sa plage n'attend pas que celle-ci s'ouvre, et une relance qui en
+  sort s'arrête là.
+- Le **repos** ne gêne pas la relance : il n'est posé qu'au moment où la règle
+  agit. Une fois qu'elle a agi, la relance en cours est effacée.
+- En **simulation**, la relance se déroule pour de vrai — on attend, on
+  réévalue, on écrit au journal — et seules les actions ne partent pas.
+- Le bouton **Tester** ne relance jamais : il exécute les actions quoi que
+  disent les conditions, c'est son rôle.
+
+Chaque essai raté laisse au journal une ligne **nouvel essai prévu**, avec les
+conditions une par une : on voit, essai après essai, laquelle a dit non. Le
+dernier refus est écrit **conditions non remplies**, avec la mention de
+l'abandon. Un intervalle plus long que la durée ne laisserait place à aucun
+nouvel essai : la fenêtre de la règle le refuse.
+
+Pour « la maison est vide depuis » et « la maison est occupée depuis », la
+relance est aussi le seul moyen de réessayer pendant la même absence : sans
+elle, une règle dont les conditions sont fausses à la minute où la durée est
+atteinte attend l'absence suivante.
+
+Pour **À heure fixe**, la relance est le moyen de dire « à 21:30, ou dès que la
+dernière lampe est éteinte ». Une heure ne s'inversant pas, la série ne
+s'arrête qu'au bout de sa durée — ou quand l'**heure suivante** de la liste
+tombe : celle-ci annule la série en cours (le journal écrit *attente annulée —
+l'heure suivante prend le relais*) et repart d'une série neuve. Choisissez donc
+une durée plus courte que l'écart entre deux heures (25 minutes pour des heures
+espacées de 30) : chaque heure a alors sa série complète, et la règle n'agit
+jamais deux fois pour la même heure.
 
 ### Et pas trop souvent — le repos
 
@@ -538,23 +634,28 @@ délais, et c'est justement celui où il ne faut rien perdre.
 
 L'**export CSV** sert la campagne de simulation : une semaine d'observation se
 relit mieux dans un tableur, où l'on trie par verdict et où l'on compte, que
-dans une page web où l'on fait défiler.
+dans une page web où l'on fait défiler. Sa dernière colonne, `declencheur`, dit
+pour chaque entrée ce qui l'a déclenchée — et, pour une règle à heure fixe,
+laquelle des heures : c'est ce qui permet de compter à quelle heure le mode nuit
+s'arme vraiment.
 
 Il est écrit dans un fichier du plugin, pas dans les logs de Jeedom : il survit à
 un redémarrage, il ne se fait pas noyer par le reste de l'installation, et il ne
 grossit pas sans fin — les entrées les plus anciennes tombent d'elles-mêmes.
 
-Une entrée de règle porte l'heure, le nom de la règle, le déclencheur en clair,
-le verdict, le détail chiffré qui l'explique, la liste des conditions avec leur
+Une entrée de règle porte l'heure, le nom de la règle, le déclencheur en clair
+— pour une règle à heure fixe, l'heure qui l'a déclenchée, « À 21:30 », précédée
+d'une horloge, y compris au bout d'une attente ou d'une relance —, le verdict, le détail chiffré qui l'explique, la liste des conditions avec leur
 résultat une par une, et la liste des actions avec le leur.
 
 | Verdict | Ce qu'il veut dire |
 |---|---|
 | **déclenchée** | la règle a agi. Les actions disent « exécutée », ou « simulée » si le plugin ne faisait que regarder. |
-| **conditions non remplies** | le déclencheur est tombé, une ligne de condition a dit non. Le journal dit laquelle. |
+| **conditions non remplies** | le déclencheur est tombé, une ligne de condition a dit non. Le journal dit laquelle — et, pour une règle qui a une relance, que les nouveaux essais sont épuisés. |
 | **hors horaire** | la plage horaire ou le jour de la semaine ne s'y prêtait pas. |
 | **en attente** | le compte à rebours de l'attente a démarré. |
-| **attente annulée** | le déclencheur s'est inversé avant la fin : quelqu'un est rentré. |
+| **nouvel essai prévu** | une ligne de condition a dit non, mais la règle a une relance : elle réessaiera dans le nombre de minutes indiqué. |
+| **attente annulée** | le déclencheur s'est inversé avant la fin — de l'attente ou des relances : quelqu'un est rentré, ou reparti. Pour une règle à heure fixe, c'est l'heure suivante de la liste qui a remplacé la série en cours. |
 | **repos** | la règle a déjà agi il y a moins que son délai d'anti-répétition. |
 | **désactivée** | la règle existe mais sa case est décochée. |
 | **échec** | une action n'est pas passée — y compris une commande devenue introuvable. Le message d'erreur est là. |
@@ -570,11 +671,11 @@ Lire ce journal de temps en temps est le seul entretien que le plugin demande.
 
 La page **Santé** de Jeedom répond d'un coup d'œil à « est-ce que tout va
 bien ? ». Le plugin n'y compte que des choses qui ne se voient pas autrement —
-quatorze lignes, dont aucune n'est décorative :
+quinze lignes, dont aucune n'est décorative :
 
 | Contrôle | Ce qu'il rattrape |
 |---|---|
-| Dernière évaluation | le cron du cœur ne passe plus. C'est la panne qui arrête tout : les délais de départ n'expirent plus, les attentes des règles ne se terminent plus, et les commandes gardent leur dernière valeur — qui a l'air juste. Tant que cette ligne est rouge, les treize autres ne veulent rien dire |
+| Dernière évaluation | le cron du cœur ne passe plus. C'est la panne qui arrête tout : les délais de départ n'expirent plus, les attentes des règles ne se terminent plus, et les commandes gardent leur dernière valeur — qui a l'air juste. Tant que cette ligne est rouge, les quatorze autres ne veulent rien dire |
 | Personnes suivies, Foyers | le décompte, pour repérer un équipement oublié |
 | Personnes sans source | une personne créée puis jamais terminée. Elle a l'air normale et reste absente à vie |
 | Sources disparues | la commande a été supprimée depuis. La personne garde son dernier état en attendant qu'on lui désigne une autre source |
@@ -584,6 +685,7 @@ quatorze lignes, dont aucune n'est décorative :
 | Foyers sans personne | un foyer vide en permanence, dont les règles de départ partent dans le vide |
 | Dossier de données inscriptible | sans lui, le journal ne s'écrit pas — et une campagne de simulation ne laisse aucune trace |
 | Références mortes dans les règles | une action qui ne pointe plus sur rien. Celles-là échouent en silence |
+| Règles à heure fixe sans heure | une règle active « À heure fixe » dont aucune heure n'est valable. Elle ne se déclenchera jamais, et rien d'autre ne le dit |
 | Balises muettes | une balise qui se dit présente mais n'émet plus depuis longtemps. Voir plus bas : c'est la panne qui fige une maison à « occupée » pour toujours |
 | Personnes hors de tout foyer | elles sont suivies, mais aucune règle ne peut se déclencher sur elles |
 | Mode simulation | ce qui tourne à blanc en ce moment |
@@ -593,7 +695,7 @@ dit rien : la règle part, le journal note « déclenchée », et rien ne se pro
 Et une simulation oubliée est la panne la plus discrète du plugin : tout
 fonctionne, le journal se remplit, les états sont justes, et rien n'agit.
 
-## Deux exemples complets
+## Trois exemples complets
 
 ### Armer en partant
 
@@ -653,7 +755,101 @@ Ce que chaque ligne empêche :
   ensemble, ou un signal qui s'ébroue en arrivant, ne doivent produire qu'un
   seul désarmement.
 
-Et le conseil qui vaut pour les deux : écrivez-les avec la **simulation** du
+### Mode nuit automatique
+
+Le soir, quand la maison est prête à dormir — tout le monde est là ou du moins
+quelqu'un, l'alarme n'est pas encore armée, la télé et les lampes sont
+éteintes —, l'alarme passe en mode nuit. Sans qu'on y pense, et sans l'armer
+sur quelqu'un qui regarde encore un film.
+
+| Réglage | Valeur |
+|---|---|
+| **Nom** | Mode nuit automatique |
+| **Quand** | À heure fixe — 21:30, 22:00, 22:30, 23:00, 00:00, 00:30 |
+| **Après** | 0 minute |
+| **Réessayer** | toutes les 5 minutes, pendant 25 minutes (facultatif) |
+| **Pas plus souvent que** | 0 minute |
+| **Plage horaire** | aucune |
+| **Jours** | les sept |
+| **Conditions** | `[Maison][Foyer][Présence]` `==` `1` |
+| | `[Maison][Alarme][Armée]` `==` `0` |
+| | `[Salon][TV][Allumée]` `==` `0` |
+| | `[Salon][Lampes][Etat]` `==` `0` (une ligne par lampe) |
+| **Action** | `[Maison][Alarme][Mode nuit]` |
+
+Ce que chaque ligne fait :
+
+- **Six heures plutôt qu'une.** On ne se couche pas tous les soirs à la même
+  heure. À 21:30, si tout est éteint, l'alarme passe en mode nuit ; sinon la
+  règle se représente à 22:00, à 22:30… jusqu'à 00:30. Le premier rendez-vous
+  où la maison est prête est le bon.
+- **« Présence du foyer == 1 »** évite de passer en mode nuit une maison vide —
+  celle-là doit être armée pour de bon, par la règle *J'arme en partant*.
+  C'est aussi elle qui dit non si la maison se vide pendant une attente : une
+  heure ne s'inverse pas, ce sont les conditions qui décident.
+- **« Armée == 0 »** fait que, une fois l'alarme passée en mode nuit, les
+  heures suivantes ne la recommandent pas : elles s'arrêtent sur *conditions
+  non remplies*, et le journal dit que c'est l'alarme déjà armée qui a dit non.
+  C'est pourquoi aucun repos n'est nécessaire — et un repos serait même
+  gênant : désarmée à 22:10 pour sortir le chien, l'alarme doit pouvoir
+  repasser en mode nuit à 22:30.
+- **La télé et les lampes** sont le signe qu'on est encore debout. Si le salon
+  n'a pas de commande d'état pour chaque lampe, une seule ligne sur une
+  commande qui les résume (un virtuel « Lampes du salon allumées ») fait
+  l'affaire.
+- **La relance (facultative)** rend la règle attentive entre deux heures : à
+  21:30 une lampe est encore allumée, la règle réessaie à 21:35, 21:40… et
+  passe en mode nuit dès qu'elle est éteinte, au lieu d'attendre 22:00. Vingt-
+  cinq minutes, et non soixante : la série s'achève avant l'heure suivante, qui
+  repart d'une série à elle. Sans relance, la règle abandonne au premier
+  refus et attend simplement l'heure suivante — c'est plus simple, et une
+  demi-heure de retard au pire.
+
+Le journal se lit alors comme la soirée : « À 21:30 — nouvel essai prévu
+(Lampes = 1) », « À 21:30 — nouvel essai prévu », « À 21:30 — déclenchée »
+à 21:45, puis « À 22:00 — conditions non remplies (Armée = 1) », et ainsi de
+suite. Pour cette règle-là plus encore que pour les autres, laissez-la
+quelques soirs en simulation : c'est là qu'on découvre la lampe de chevet
+qu'on avait oubliée, ou la télé qui publie « 0 » en veille.
+
+La même règle, écrite directement dans la configuration du foyer (ce que fait
+l'éditeur quand on clique sur *Valider*, puis *Sauvegarder*) :
+
+```json
+{
+    "id": "r-nuit01",
+    "nom": "Mode nuit automatique",
+    "actif": 1,
+    "declencheur": "heure",
+    "personne": 0,
+    "minutes": 0,
+    "heures_fixes": ["00:00", "00:30", "21:30", "22:00", "22:30", "23:00"],
+    "attente": 0,
+    "repos": 0,
+    "relance": 5,
+    "relance_max": 25,
+    "simulation": 1,
+    "conditions": {
+        "heures": {"actif": 0, "de": "00:00", "a": "23:59"},
+        "jours": [1, 2, 3, 4, 5, 6, 7],
+        "lignes": [
+            {"cmd": 101, "operateur": "==", "valeur": "1", "nom": "[Maison][Foyer][Présence]"},
+            {"cmd": 102, "operateur": "==", "valeur": "0", "nom": "[Maison][Alarme][Armée]"},
+            {"cmd": 103, "operateur": "==", "valeur": "0", "nom": "[Salon][TV][Allumée]"},
+            {"cmd": 104, "operateur": "==", "valeur": "0", "nom": "[Salon][Lampes][Etat]"}
+        ]
+    },
+    "actions": [
+        {"cmd": "#[Maison][Alarme][Mode nuit]#", "cmd_id": 105, "options": {}}
+    ]
+}
+```
+
+Les numéros de `cmd` et `cmd_id` sont ceux de votre installation. Les heures
+peuvent être écrites dans n'importe quel ordre : elles sont triées et
+dédoublonnées à l'enregistrement.
+
+Et le conseil qui vaut pour les trois : écrivez-les avec la **simulation** du
 foyer levée, laissez-les vivre trois jours, relisez le journal. Une règle
 d'armement qu'on met en production sans l'avoir lue est une règle qui se
 présentera à vous un soir, à 22 h, avec une sirène.

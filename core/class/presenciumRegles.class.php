@@ -35,8 +35,13 @@
  */
 class presenciumRegles {
 
+    /* `heure` est le seul déclencheur qui ne parle pas de présence : il tombe
+     * à une heure de l'horloge (« À heure fixe »). Il est rangé ici avec les
+     * autres parce qu'une règle n'en a qu'un, et que tout ce qui suit — les
+     * conditions, l'attente, la relance, le repos, la simulation, le journal —
+     * s'applique à lui sans exception. */
     const DECLENCHEURS = array('arrivee_premier', 'depart_dernier', 'arrivee_tous',
-                               'arrivee', 'depart', 'vide_depuis', 'occupee_depuis');
+                               'arrivee', 'depart', 'vide_depuis', 'occupee_depuis', 'heure');
     const OPERATEURS = array('==', '!=', '>', '>=', '<', '<=');
 
     /* Douze heures d'attente, vingt-quatre heures de repos : au-delà, la règle
@@ -45,10 +50,61 @@ class presenciumRegles {
     const ATTENTE_MAX = 720;
     const REPOS_MAX = 1440;
 
+    /*
+     * La relance : l'intervalle entre deux essais, et la durée pendant
+     * laquelle on réessaie.
+     *
+     * L'intervalle s'arrête à deux heures. Au-delà, ce n'est plus « réessayer
+     * dès que c'est calme » mais une seconde règle déguisée, qui agirait sur une
+     * situation que plus personne n'a en tête — la porte qu'on voulait
+     * reverrouiller dix minutes après l'arrivée le serait trois heures plus
+     * tard, au milieu de la soirée.
+     *
+     * La durée maximale, elle, reprend exactement la borne de l'attente
+     * (ATTENTE_MAX, douze heures) et pour la même raison : une relance EST une
+     * suite d'attentes, et une règle qui attend encore le lendemain ne se
+     * vérifie plus. Une constante distincte laisserait croire que les deux
+     * bornes peuvent diverger ; elles ne le doivent pas. Son plancher est une
+     * minute et non zéro : « réessayer pendant zéro minute » ne veut rien dire,
+     * c'est `relance` à zéro qui désactive.
+     *
+     * Soixante minutes par défaut : assez pour qu'un passage devant une caméra
+     * finisse par se calmer, assez peu pour qu'une condition durablement
+     * fausse (une porte restée ouverte) n'occupe pas la règle tout l'après-midi.
+     */
+    const RELANCE_MAX = 120;
+    const RELANCE_DUREE_DEFAUT = 60;
+
     /* Borne du `minutes` de vide_depuis / occupee_depuis : une semaine. Un
      * réglage plus grand ne se déclencherait jamais, ce qui ressemble
      * exactement à un plugin en panne. */
     const MINUTES_MAX = 10080;
+
+    /*
+     * Le déclencheur « À heure fixe » : combien d'heures, et quel retard on
+     * rattrape.
+     *
+     * Vingt-quatre heures au plus : une par heure de la journée. Au-delà, ce
+     * n'est plus une liste d'heures qu'on relit d'un coup d'œil mais une
+     * programmation, qui a sa place dans un scénario ou dans un plugin de
+     * programmation — et une liste qu'on ne relit plus est une liste où l'on
+     * ne voit plus l'heure en trop.
+     *
+     * Cinq minutes de rattrapage. Le cron du cœur passe chaque minute, mais pas
+     * forcément À la minute : un autre plugin qui tarde à rendre la main, une
+     * sauvegarde, un redémarrage de Jeedom peuvent faire manquer 21:30 et ne
+     * donner la main qu'à 21:32. Sans rattrapage, l'heure serait perdue, en
+     * silence — exactement la nuit où la maison dormait sans alarme. Mais un
+     * rattrapage sans borne serait pire : Jeedom redémarré à 23:10 jouerait
+     * 22:30, sur une maison qui a eu quarante minutes pour changer. Cinq
+     * minutes couvrent les retards ordinaires du cron (quelques secondes à
+     * une ou deux minutes) et un redémarrage rapide, sans jamais agir sur une
+     * situation que l'heure choisie ne décrivait plus. Au-delà, c'est l'heure
+     * suivante de la liste qui prend le relais — la liste est elle-même le
+     * filet, avec la relance.
+     */
+    const HEURES_FIXES_MAX = 24;
+    const RATTRAPAGE_HEURE = 5;
 
     /*
      * Remet en forme la liste complète des règles d'un foyer.
@@ -146,8 +202,26 @@ class presenciumRegles {
         }
 
         $regle['minutes'] = self::entierBorne(isset($_regle['minutes']) ? $_regle['minutes'] : 0, 0, self::MINUTES_MAX);
+        /* Les heures ne veulent dire quelque chose que pour `heure`, et on les
+         * vide ailleurs pour la même raison que la personne : une liste restée
+         * d'un déclencheur choisi puis abandonné dans la modale serait relue
+         * par la page Santé, le tableau et l'export comme si elle comptait.
+         * La clé, elle, est toujours là : une règle a toujours la même forme,
+         * et c'est ce qui permet de la relire sans isset() partout. */
+        $regle['heures_fixes'] = ($declencheur === 'heure')
+            ? self::heuresFixes(isset($_regle['heures_fixes']) ? $_regle['heures_fixes'] : null)
+            : array();
         $regle['attente'] = self::entierBorne(isset($_regle['attente']) ? $_regle['attente'] : 0, 0, self::ATTENTE_MAX);
         $regle['repos'] = self::entierBorne(isset($_regle['repos']) ? $_regle['repos'] : 0, 0, self::REPOS_MAX);
+        /* `relance` à zéro désactive : c'est le défaut, pour qu'une règle
+         * écrite avant l'arrivée de la relance garde exactement le
+         * comportement qu'on lui connaît — abandonner au premier « non ».
+         * `relance_max` vide ou illisible retombe sur son défaut et non sur le
+         * plancher : une minute de relance, c'est une relance qui n'a jamais
+         * lieu, et l'utilisateur croirait la fonction en panne. */
+        $regle['relance'] = self::entierBorne(isset($_regle['relance']) ? $_regle['relance'] : 0, 0, self::RELANCE_MAX);
+        $regle['relance_max'] = self::entierBorne(isset($_regle['relance_max']) ? $_regle['relance_max'] : self::RELANCE_DUREE_DEFAUT,
+                                                  1, self::ATTENTE_MAX, self::RELANCE_DUREE_DEFAUT);
         $regle['simulation'] = self::caseCochee(isset($_regle['simulation']) ? $_regle['simulation'] : 0);
 
         $regle['conditions'] = self::normaliserConditions(
@@ -260,6 +334,48 @@ class presenciumRegles {
             );
         }
         return $propres;
+    }
+
+    /*
+     * Les heures d'un déclencheur « À heure fixe » : des « HH:MM » valides,
+     * triées, sans doublon, vingt-quatre au plus.
+     *
+     * Une liste ou une chaîne : un JSON écrit à la main porte volontiers
+     * "21:30, 22:00", et le refuser rendrait une règle muette pour une virgule.
+     * Chaque heure passe par heure(), la même lecture que la plage horaire —
+     * « 7:5 », « 07h05 », « 0705 » —, pour qu'une même saisie ne vaille pas
+     * deux choses selon le champ où on l'a tapée.
+     *
+     * Une heure illisible est RETIRÉE, pas remplacée : l'heure de repli d'une
+     * borne de plage (00:00) serait ici une heure où la règle agit, que
+     * personne n'a choisie. Une liste qui se retrouve vide est gardée vide —
+     * la règle ne se déclenche alors jamais, la page Santé le signale, et
+     * l'éditeur refuse de l'enregistrer ainsi.
+     *
+     * Le tri n'est pas cosmétique : une liste triée se relit comme une soirée
+     * (21:30, 22:00… 00:00, 00:30 — minuit en tête, puisqu'une heure appartient
+     * à sa journée), et deux listes équivalentes s'écrivent pareil, ce qui
+     * compte pour la signature que mémorise le moteur (voir signatureHeures()).
+     */
+    public static function heuresFixes($_heures) {
+        $brutes = array();
+        if (is_array($_heures)) {
+            $brutes = $_heures;
+        } elseif (is_string($_heures) && trim($_heures) !== '') {
+            $brutes = preg_split('/[\s,;]+/', trim($_heures));
+        }
+        $propres = array();
+        foreach ($brutes as $brute) {
+            if (is_array($brute) || is_object($brute) || is_bool($brute) || $brute === null) {
+                continue;
+            }
+            $heure = self::heure((string) $brute, null);
+            if ($heure !== null && !in_array($heure, $propres, true)) {
+                $propres[] = $heure;
+            }
+        }
+        sort($propres, SORT_STRING);
+        return array_slice($propres, 0, self::HEURES_FIXES_MAX);
     }
 
     /*
@@ -541,8 +657,167 @@ class presenciumRegles {
                 /* « Quelqu'un part » ne s'annule que quand tout le monde est
                  * revenu : un autre départ ne le contredit pas. */
                 return ($personne > 0) ? isset($presents[$personne]) : ($nombre >= $total && $total > 0);
+            case 'heure':
+                /*
+                 * Une heure ne s'inverse pas : 21:30 est passé, rien ne le
+                 * « dé-passera ». Il n'y a donc pas d'annulation par
+                 * inversion pour ce déclencheur — ni de l'attente, ni de la
+                 * relance.
+                 *
+                 * C'est voulu, et ce n'est pas un manque. Ce qu'on attendrait
+                 * d'une inversion (« quelqu'un est reparti », « la télé s'est
+                 * rallumée ») est un état du monde, et un état du monde se dit
+                 * par une LIGNE DE CONDITION, relue au moment d'agir — après
+                 * l'attente, à chaque relance. Une attente à heure fixe va
+                 * donc toujours à son terme, puis la règle regarde : si la
+                 * maison s'est vidée entre-temps, c'est « Présence du foyer ==
+                 * 1 » qui dit non, et le journal dit laquelle.
+                 *
+                 * Ce qui met fin à une relance à heure fixe, outre sa durée,
+                 * c'est l'heure SUIVANTE de la liste quand elle tombe pendant
+                 * la série : voir presencium::traiterAttentes().
+                 */
+                return false;
         }
         return false;
+    }
+
+    /*
+     * La signature d'une liste d'heures : ce qui dit au moteur que la liste a
+     * changé depuis qu'il l'a mémorisée. Les heures sont déjà triées et
+     * dédoublonnées par heuresFixes(), donc deux listes équivalentes ont la
+     * même signature.
+     */
+    public static function signatureHeures($_regle) {
+        $heures = (is_array($_regle) && isset($_regle['heures_fixes'])) ? self::heuresFixes($_regle['heures_fixes']) : array();
+        return implode(',', $heures);
+    }
+
+    /*
+     * La mémoire d'une règle « À heure fixe », prête à servir.
+     *
+     * Elle tient en trois clés, rangées par le moteur dans la section
+     * `temporel` de l'état du foyer, sous l'identifiant de la règle — la même
+     * section et la même clé que l'épisode de vide_depuis, qui joue le même
+     * rôle (« ceci a déjà été présenté ») :
+     *
+     *   - `echeance`  : l'instant de la dernière heure présentée — celle de
+     *                   21:30 aujourd'hui, par exemple, en horodatage. C'est
+     *                   ce qui fait qu'une heure ne tombe qu'UNE fois : le
+     *                   passage suivant du cron la trouve déjà jouée ;
+     *   - `vue`       : l'instant, arrondi à la minute, où le moteur a vu cette
+     *                   liste d'heures pour la première fois. Aucune heure
+     *                   antérieure n'est jouée : c'est l'absence de
+     *                   rétroactivité ;
+     *   - `signature` : la liste telle qu'elle était alors (signatureHeures()).
+     *
+     * Une mémoire absente, illisible — un entier laissé par un ancien
+     * déclencheur vide_depuis de la même règle — ou dont la signature ne
+     * correspond plus est REFAITE, avec `vue` à la minute courante. Sans cela,
+     * une règle créée à 22:02, ou à laquelle on vient d'ajouter 22:00, jouerait
+     * 22:00 dans la foulée grâce au rattrapage : la règle agirait pour une
+     * heure qui était déjà passée quand on l'a écrite, ce que personne ne lit
+     * dans « À 22:00 ». Le prix, assumé : une règle enregistrée à 21:29:50 que
+     * le cron ne voit qu'à 21:31 manque 21:30 — elle n'existait pas pour lui à
+     * 21:30.
+     *
+     * L'arrondi à la minute est ce qui laisse passer le cas ordinaire : la
+     * règle enregistrée à 21:29, vue par le passage de 21:30:02, a `vue` =
+     * 21:30:00 et joue bien 21:30.
+     *
+     * Rend la mémoire telle qu'elle doit être ; au moteur de l'écrire si elle
+     * a changé. Pure : elle ne lit ni n'écrit rien.
+     */
+    public static function memoireHeureFixe($_regle, $_maintenant, $_memoire) {
+        $signature = self::signatureHeures($_regle);
+        if (is_array($_memoire) && isset($_memoire['vue'], $_memoire['signature'])
+            && (string) $_memoire['signature'] === $signature) {
+            return array(
+                'echeance'  => isset($_memoire['echeance']) ? (int) $_memoire['echeance'] : 0,
+                'vue'       => (int) $_memoire['vue'],
+                'signature' => $signature,
+            );
+        }
+        $maintenant = (int) $_maintenant;
+        return array(
+            'echeance'  => 0,
+            'vue'       => $maintenant - ($maintenant % 60),
+            'signature' => $signature,
+        );
+    }
+
+    /*
+     * L'heure fixe qui tombe maintenant, ou null.
+     *
+     * Rend array('heure' => 'HH:MM', 'echeance' => horodatage) pour l'heure de
+     * la liste à jouer à cet instant. Une heure est à jouer quand, à la fois :
+     *
+     *   - elle est passée, mais depuis moins de RATTRAPAGE_HEURE minutes : voir
+     *     la constante pour la borne ;
+     *   - elle n'est pas antérieure à `vue` : pas de rétroactivité ;
+     *   - elle est postérieure à `echeance` : une fois par jour et par heure.
+     *
+     * L'heure est toujours datée du JOUR COURANT, et c'est ce qui règle le
+     * passage de minuit. 00:30 est calculé sur la date du jour qui commence :
+     * le 30 à 00:31, c'est « le 30 à 00:30 », une échéance distincte de celle
+     * de la veille, qui tombe donc bien chaque nuit. Et une heure de la veille
+     * n'est JAMAIS rattrapée : le 30 à 00:02, 23:59 est calculé sur le 30,
+     * c'est-à-dire dans presque vingt-quatre heures, pas il y a trois minutes.
+     * Le cas est rare (le cron en retard de plusieurs minutes pile à minuit),
+     * et le perdre vaut mieux que l'alternative : pour le rattraper, il
+     * faudrait dater chaque heure de la veille OU du jour selon l'instant, et
+     * c'est exactement dans cette arithmétique-là qu'une heure finit jouée deux
+     * fois — une fois comme « hier 23:59 », une fois comme « aujourd'hui
+     * 23:59 ».
+     *
+     * L'heure est posée par mktime(), dans le fuseau de Jeedom, comme
+     * horaireOk() lit les siennes : aux changements d'heure, 02:30 qui n'existe
+     * pas tombe à 03:30, et 02:30 qui existe deux fois ne tombe qu'une fois —
+     * la seconde est à une heure de l'échéance mémorisée, hors rattrapage.
+     *
+     * Deux heures de la liste dans la même fenêtre de rattrapage (22:00 et
+     * 22:02, un cron qui reprend à 22:03) ne donnent qu'UN déclenchement, celui
+     * de la plus récente : jouer deux fois la même règle dans la même minute,
+     * sur le même état de la maison, ne dit rien de plus et agit deux fois.
+     *
+     * Pure, comme le reste de cette classe : c'est ce qui permet d'éprouver
+     * minuit, le rattrapage et la rétroactivité hors ligne, en fixant l'heure.
+     */
+    public static function heureFixeDue($_regle, $_maintenant, $_memoire) {
+        if (!is_array($_regle) || !isset($_regle['declencheur']) || (string) $_regle['declencheur'] !== 'heure') {
+            return null;
+        }
+        /* Une mémoire que memoireHeureFixe() n'a pas encore posée : le moteur
+         * n'a pas vu la liste, rien n'est à jouer. */
+        if (!is_array($_memoire) || !isset($_memoire['vue'], $_memoire['signature'])
+            || (string) $_memoire['signature'] !== self::signatureHeures($_regle)) {
+            return null;
+        }
+        $maintenant = (int) $_maintenant;
+        $vue = (int) $_memoire['vue'];
+        $derniere = isset($_memoire['echeance']) ? (int) $_memoire['echeance'] : 0;
+        $annee = (int) date('Y', $maintenant);
+        $mois = (int) date('n', $maintenant);
+        $jour = (int) date('j', $maintenant);
+
+        $retenue = null;
+        foreach (self::heuresFixes($_regle['heures_fixes']) as $heure) {
+            list($h, $m) = explode(':', $heure);
+            $echeance = mktime((int) $h, (int) $m, 0, $mois, $jour, $annee);
+            if ($echeance === false || $echeance > $maintenant) {
+                continue;
+            }
+            if ($maintenant - $echeance >= self::RATTRAPAGE_HEURE * 60) {
+                continue;
+            }
+            if ($echeance < $vue || $echeance <= $derniere) {
+                continue;
+            }
+            if ($retenue === null || $echeance > $retenue['echeance']) {
+                $retenue = array('heure' => $heure, 'echeance' => $echeance);
+            }
+        }
+        return $retenue;
     }
 
     /*
@@ -702,8 +977,11 @@ class presenciumRegles {
      * supprimée, foyer réorganisé — se rend lisible plutôt que de vider la
      * phrase : « Arrivée de la personne #42 » se cherche, « Arrivée de » ne se
      * comprend pas.
+     *
+     * $_transition, facultative, est celle qui a déclenché : seul `heure` s'en
+     * sert, pour dire laquelle de ses heures est tombée.
      */
-    public static function libelleDeclencheur($_regle, $_noms) {
+    public static function libelleDeclencheur($_regle, $_noms, $_transition = null) {
         $declencheur = (is_array($_regle) && isset($_regle['declencheur']))
             ? (string) $_regle['declencheur'] : '';
         $personne = (is_array($_regle) && isset($_regle['personne'])) ? (int) $_regle['personne'] : 0;
@@ -730,6 +1008,21 @@ class presenciumRegles {
                 return self::traduire('Vide depuis') . ' ' . $minutes . ' min';
             case 'occupee_depuis':
                 return self::traduire('Occupée depuis') . ' ' . $minutes . ' min';
+            case 'heure':
+                /* L'heure QUI a déclenché quand on la connaît — « À 21:30 » —,
+                 * parce que c'est la question qu'on pose au journal : laquelle
+                 * des six heures a armé l'alarme ? Sans transition (liste des
+                 * règles, bouton Tester, suite d'actions différée), la liste
+                 * entière, qui est alors la seule chose vraie à dire. */
+                if (is_array($_transition) && isset($_transition['heure'])
+                    && preg_match('/^\d{2}:\d{2}$/', (string) $_transition['heure'])) {
+                    return sprintf(self::traduire('À %s'), (string) $_transition['heure']);
+                }
+                $heures = (is_array($_regle) && isset($_regle['heures_fixes'])) ? self::heuresFixes($_regle['heures_fixes']) : array();
+                if (count($heures) === 0) {
+                    return self::traduire('À heure fixe (aucune heure)');
+                }
+                return sprintf(self::traduire('À %s'), implode(', ', $heures));
         }
         return self::traduire('Déclencheur inconnu');
     }
@@ -749,10 +1042,13 @@ class presenciumRegles {
         return (is_numeric($_valeur) && (int) $_valeur === 1) ? 1 : 0;
     }
 
-    /* Un entier borné, ou le minimum si ce n'en est pas un. */
-    private static function entierBorne($_valeur, $_min, $_max) {
+    /* Un entier borné, ou le minimum si ce n'en est pas un — ou $_defaut s'il
+     * est donné : quand le minimum n'est pas un « non » raisonnable (la durée
+     * de relance, dont le plancher d'une minute la rendrait inopérante), une
+     * saisie illisible doit retomber sur le défaut, pas sur la borne. */
+    private static function entierBorne($_valeur, $_min, $_max, $_defaut = null) {
         if (is_bool($_valeur) || is_array($_valeur) || $_valeur === null || !is_numeric($_valeur)) {
-            return $_min;
+            return ($_defaut === null) ? $_min : $_defaut;
         }
         return max($_min, min($_max, (int) $_valeur));
     }

@@ -224,6 +224,7 @@ trait presenciumSante {
         $foyersVides = array();
         $foyersSimules = array();
         $reglesMortes = array();
+        $reglesSansHeure = array();
         $maintenant = time();
 
         foreach (self::byType(__CLASS__) as $eqLogic) {
@@ -300,6 +301,17 @@ trait presenciumSante {
                 $foyersSimules[] = $eqLogic->getHumanName();
             }
             foreach ($eqLogic->regles() as $regle) {
+                /* Une règle « À heure fixe » sans heure ne se déclenche jamais,
+                 * et rien ne le dit : elle est active, elle est dans la liste,
+                 * elle n'apparaît simplement jamais au journal. L'éditeur
+                 * refuse de l'enregistrer ainsi, mais une configuration écrite
+                 * à la main ou dont toutes les heures étaient illisibles y
+                 * arrive quand même. Seules les règles actives comptent : une
+                 * règle décochée ne promet rien. */
+                if ($regle['declencheur'] === 'heure' && (int) $regle['actif'] === 1
+                    && count(presenciumRegles::heuresFixes($regle['heures_fixes'])) === 0) {
+                    $reglesSansHeure[] = $eqLogic->getHumanName() . ' — ' . $regle['nom'];
+                }
                 foreach (is_array($regle['actions']) ? $regle['actions'] : array() as $action) {
                     /* Un mot-clé (wait, variable, scenario…) ou une fonction
                      * utilisateur n'est pas une commande : rien de mort. */
@@ -443,6 +455,12 @@ trait presenciumSante {
             'result' => (count($reglesMortes) === 0) ? __('aucune', __FILE__) : implode(' ; ', array_unique($reglesMortes)),
             'advice' => (count($reglesMortes) === 0) ? '' : __('Ces règles pointent une commande qui n\'existe plus : elles ne feront rien, sans erreur.', __FILE__),
             'state'  => (count($reglesMortes) === 0),
+        );
+        $sante[] = array(
+            'test'   => __('Règles à heure fixe sans heure', __FILE__),
+            'result' => (count($reglesSansHeure) === 0) ? __('aucune', __FILE__) : implode(' ; ', $reglesSansHeure),
+            'advice' => (count($reglesSansHeure) === 0) ? '' : __('Ces règles actives n\'ont aucune heure valable : elles ne se déclencheront jamais. Ouvrez-les et ajoutez au moins une heure.', __FILE__),
+            'state'  => (count($reglesSansHeure) === 0),
         );
         $sante[] = array(
             /* Une information, pas une erreur : la simulation est un mode de

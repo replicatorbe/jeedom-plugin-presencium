@@ -1,5 +1,20 @@
 # Changelog
 
+## En préparation
+
+- **Nouveau déclencheur « À heure fixe ».** Une liste de 1 à 24 heures
+  (21:30, 22:00…) : la règle se présente à chacune, une fois par jour, et ses
+  conditions décident. Rattrapage de cinq minutes si Jeedom a manqué la minute,
+  jamais d'une heure de la veille, jamais d'une heure passée avant
+  l'enregistrement de la règle. Conditions, attente, relance, repos, simulation,
+  journal (« À 21:30 ») et bouton *Tester* s'appliquent comme ailleurs. Exemple
+  complet dans la documentation : le mode nuit automatique.
+- **Relance des conditions.** Une règle dont une condition dit non peut
+  réessayer toutes les *N* minutes pendant une durée bornée, au lieu
+  d'abandonner.
+- L'export CSV du journal gagne une colonne `declencheur` ; la page Santé, une
+  ligne « Règles à heure fixe sans heure ».
+
 ## 1.3
 
 Une relecture complète du plugin, faite pour trouver ce qui pouvait armer

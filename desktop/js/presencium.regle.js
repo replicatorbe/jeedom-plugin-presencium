@@ -81,7 +81,48 @@ function presenciumLibelleDeclencheur(_regle) {
        fenêtre d'édition, elle, refuse de la réenregistrer ainsi. */
     texte += ' ' + presenciumEntier(_regle.minutes, 0, 0, 10080) + ' {{min}}'
   }
+  if (cle === 'heure') {
+    /* Les heures elles-mêmes, et pas « À heure fixe… » : c'est la liste qu'on
+       vient relire dans le tableau. Vide, on le dit en toutes lettres — une
+       règle qui ne partira jamais ne doit pas avoir l'air d'une autre. */
+    var heures = presenciumHeuresFixes(_regle.heures_fixes)
+    texte = (heures.length === 0) ? '{{À heure fixe — aucune heure}}' : '{{À}} ' + heures.join(', ')
+  }
   return texte
+}
+
+/*
+ * Une heure « HH:MM », ou null si ce n'en est pas une.
+ *
+ * La même lecture que presenciumRegles::heure() côté serveur — « 7:5 »,
+ * « 07h05 », « 0705 » — pour qu'une heure acceptée ici ne soit pas retirée en
+ * silence à l'enregistrement. Le champ <input type="time"> rend déjà HH:MM ;
+ * le reste sert aux règles écrites à la main et relues ici.
+ */
+function presenciumHeureNormalisee(_valeur) {
+  var texte = String(isset(_valeur) && _valeur !== null ? _valeur : '').trim()
+  var morceaux = texte.match(/^(\d{1,2})(?:[:hH.](\d{1,2})|(\d{2}))$/)
+  if (morceaux === null) { return null }
+  var heures = parseInt(morceaux[1], 10)
+  var minutes = parseInt(isset(morceaux[2]) && morceaux[2] !== '' ? morceaux[2] : morceaux[3], 10)
+  if (isNaN(heures) || isNaN(minutes) || heures > 23 || minutes > 59) { return null }
+  return (heures < 10 ? '0' : '') + heures + ':' + (minutes < 10 ? '0' : '') + minutes
+}
+
+/* La liste des heures fixes telle que le serveur la rangera
+   (presenciumRegles::heuresFixes) : valides, triées, sans doublon, 24 au plus.
+   Tenue identique des deux côtés, pour que ce qu'on voit dans la fenêtre soit
+   exactement ce qui sera enregistré. */
+function presenciumHeuresFixes(_liste) {
+  var brutes = Array.isArray(_liste) ? _liste
+    : ((typeof _liste === 'string' && _liste.trim() !== '') ? _liste.trim().split(/[\s,;]+/) : [])
+  var propres = []
+  for (var i = 0; i < brutes.length; i++) {
+    var heure = presenciumHeureNormalisee(brutes[i])
+    if (heure !== null && propres.indexOf(heure) === -1) { propres.push(heure) }
+  }
+  propres.sort()
+  return propres.slice(0, 24)
 }
 
 /*
@@ -148,8 +189,34 @@ function presenciumLigneRegle(_regle, _index) {
   if (init(_regle.simulation, 0) == 1) { cellNom.appendChild(presenciumBadge('warning', '{{simulation}}')) }
   var attente = presenciumEntier(_regle.attente, 0, 0, 720)
   if (attente > 0) { cellNom.appendChild(presenciumBadge('info', '{{attente}} ' + attente + ' {{min}}')) }
+  /* La relance se lit dans la liste comme l'attente : une règle qui réessaie
+     pendant une heure ne se comporte pas comme une règle qui abandonne au
+     premier refus, et c'est depuis le tableau qu'on se demande pourquoi la
+     porte s'est verrouillée vingt minutes après l'arrivée. */
+  var relance = presenciumEntier(_regle.relance, 0, 0, 120)
+  if (relance > 0) {
+    var relanceMax = presenciumEntier(_regle.relance_max, 60, 1, 720)
+    var badgeRelance = presenciumBadge('info', '{{relance}} ' + relance + ' {{min}}')
+    badgeRelance.setAttribute('title', '{{Réessaie toutes les}} ' + relance + ' {{min pendant}} ' + relanceMax + ' {{min}}')
+    cellNom.appendChild(badgeRelance)
+  }
   var repos = presenciumEntier(_regle.repos, 0, 0, 1440)
   if (repos > 0) { cellNom.appendChild(presenciumBadge('default', '{{repos}} ' + repos + ' {{min}}')) }
+  /* Une règle à heure fixe agit sans que personne n'arrive ni ne parte : c'est
+     celle qu'on soupçonne le moins quand l'alarme passe en mode nuit « toute
+     seule ». Le badge la distingue dans la colonne du nom ; les heures, elles,
+     sont dans la colonne du déclencheur et dans l'info-bulle. Une liste vide
+     passe en rouge : cette règle-là ne partira jamais. */
+  if (String(init(_regle.declencheur, '')) === 'heure') {
+    var heuresFixes = presenciumHeuresFixes(_regle.heures_fixes)
+    var badgeHeure = presenciumBadge((heuresFixes.length === 0) ? 'danger' : 'primary',
+      (heuresFixes.length === 0) ? '{{aucune heure}}'
+        : ((heuresFixes.length === 1) ? '{{1 heure fixe}}' : heuresFixes.length + ' {{heures fixes}}'))
+    badgeHeure.setAttribute('title', (heuresFixes.length === 0)
+      ? '{{Aucune heure valable : cette règle ne se déclenchera jamais.}}'
+      : '{{Se déclenche chaque jour à}} ' + heuresFixes.join(', '))
+    cellNom.appendChild(badgeHeure)
+  }
   tr.appendChild(cellNom)
 
   var cellDeclencheur = document.createElement('td')
@@ -238,7 +305,15 @@ function presenciumRegleVierge() {
     declencheur: 'depart_dernier',
     personne: 0,
     minutes: 30,
+    /* Vide : une heure pré-remplie serait une heure que personne n'a choisie,
+       et la fenêtre refuse de valider une règle à heure fixe sans heure. */
+    heures_fixes: [],
     attente: 0,
+    /* Pas de relance par défaut : c'est le comportement de toujours, et une
+       règle ne réessaie que si on le lui a demandé. La durée, elle, porte déjà
+       son défaut, pour qu'il suffise de remplir l'intervalle. */
+    relance: 0,
+    relance_max: 60,
     repos: 10,
     /* En simulation par défaut : une règle neuve n'a encore jamais été relue
        dans le journal, et la première chose qu'on lui demande est de montrer
@@ -365,6 +440,7 @@ function presenciumRegleEditeurBrancher(_racine) {
   _racine.addEventListener('change', presenciumRegleEditeurChangement)
   _racine.addEventListener('focusout', presenciumRegleEditeurSortieChamp)
   _racine.addEventListener('input', presenciumRegleEditeurSaisie)
+  _racine.addEventListener('keydown', presenciumRegleEditeurTouche)
 
   /* La croix de la fenêtre. beforeClose du coeur ne sait pas annuler une
      fermeture (dom.ui.js, close() ignore son retour) : on intercepte donc le
@@ -377,8 +453,22 @@ function presenciumRegleEditeurBrancher(_racine) {
   }
 }
 
-function presenciumRegleEditeurSaisie() {
+function presenciumRegleEditeurSaisie(event) {
   if (presenciumRegleCourante !== null) { presenciumRegleModifiee = true }
+  /* À la frappe et pas seulement au changement : la durée doit se dégriser
+     dès le premier chiffre tapé, pas quand on quitte le champ. */
+  if (event && event.target && event.target.closest('#in_presenciumRegleRelance')) {
+    presenciumRegleEditeurRelance()
+  }
+}
+
+/* Entrée dans le champ d'heure fixe ajoute l'heure : c'est le geste qu'on fait
+   après avoir tapé 21:30, et sans ce raccourci il fermerait… rien, ou pire,
+   rien de visible — l'heure resterait dans le champ sans être dans la liste. */
+function presenciumRegleEditeurTouche(event) {
+  if (event.key !== 'Enter' || !event.target.closest('#in_presenciumRegleHeureFixe')) { return }
+  event.preventDefault()
+  presenciumRegleEditeurAjouterHeure(true)
 }
 
 function presenciumRegleEditeurCroix(event) {
@@ -458,6 +548,20 @@ function presenciumRegleEditeurClic(event) {
     return
   }
 
+  if (event.target.closest('#bt_presenciumAjouterHeure')) {
+    presenciumRegleEditeurAjouterHeure(true)
+    return
+  }
+
+  if (cible = event.target.closest('.presenciumRetirerHeure')) {
+    var heureRetiree = String(cible.getAttribute('data-heure') || '')
+    presenciumRegleCourante.heures_fixes = presenciumHeuresFixes(presenciumRegleCourante.heures_fixes)
+      .filter(function (_heure) { return _heure !== heureRetiree })
+    presenciumRegleModifiee = true
+    presenciumRegleEditeurRendreHeures()
+    return
+  }
+
   if (event.target.closest('#bt_presenciumAjouterAction')) {
     presenciumRegleEditeurAjouterAction({ cmd: '', cmd_id: 0, options: {} })
     return
@@ -523,6 +627,10 @@ function presenciumRegleEditeurChangement(event) {
   }
   if (event.target.closest('#sel_presenciumRegleDeclencheur')) {
     presenciumRegleEditeurSynchroniser()
+    return
+  }
+  if (event.target.closest('#in_presenciumRegleRelance')) {
+    presenciumRegleEditeurRelance()
     return
   }
   /* La case de la règle ne décide pas seule : l'état effectif se recalcule à
@@ -605,7 +713,12 @@ function presenciumRegleEditeurPoser() {
   presenciumPoserCoche('in_presenciumRegleActif', init(regle.actif, 1) == 1)
   presenciumPoserValeur('sel_presenciumRegleDeclencheur', init(regle.declencheur, 'depart_dernier'))
   presenciumPoserValeur('in_presenciumRegleMinutes', presenciumEntier(regle.minutes, 30, 1, 10080))
+  regle.heures_fixes = presenciumHeuresFixes(regle.heures_fixes)
+  presenciumPoserValeur('in_presenciumRegleHeureFixe', '')
+  presenciumRegleEditeurRendreHeures()
   presenciumPoserValeur('in_presenciumRegleAttente', presenciumEntier(regle.attente, 0, 0, 720))
+  presenciumPoserValeur('in_presenciumRegleRelance', presenciumEntier(regle.relance, 0, 0, 120))
+  presenciumPoserValeur('in_presenciumRegleRelanceMax', presenciumEntier(regle.relance_max, 60, 1, 720))
   presenciumPoserValeur('in_presenciumRegleRepos', presenciumEntier(regle.repos, 0, 0, 1440))
   presenciumPoserCoche('in_presenciumRegleSimulation', init(regle.simulation, 0) == 1)
 
@@ -640,7 +753,19 @@ function presenciumRegleEditeurPoser() {
   presenciumRegleEditeurSimulationEtat()
   presenciumRegleEditeurSynchroniser()
   presenciumRegleEditeurHeures()
+  presenciumRegleEditeurRelance()
   presenciumRegleEditeurBoutonTester()
+}
+
+/* La durée de relance n'a de sens qu'avec un intervalle : grisée tant qu'il
+   vaut zéro, pour qu'on ne croie pas avoir réglé une relance en ne remplissant
+   que la durée. Grisée, pas vidée : la valeur est gardée et enregistrée, elle
+   resservira quand l'intervalle sera rempli. */
+function presenciumRegleEditeurRelance() {
+  var intervalle = document.getElementById('in_presenciumRegleRelance')
+  var duree = document.getElementById('in_presenciumRegleRelanceMax')
+  if (intervalle === null || duree === null) { return }
+  duree.disabled = (presenciumEntier(intervalle.value, 0, 0, 120) <= 0)
 }
 
 /* Les déclencheurs, depuis la table unique envoyée par la page. */
@@ -776,11 +901,89 @@ function presenciumRegleEditeurSynchroniser() {
   if (blocMinutes !== null) {
     blocMinutes.style.display = (cle === 'vide_depuis' || cle === 'occupee_depuis') ? '' : 'none'
   }
+  /* Masquée et non vidée quand on choisit un autre déclencheur : revenir à
+     « À heure fixe » dans la même session retrouve la liste. C'est à la
+     validation seulement qu'elle est vidée, comme le serveur le fait. */
+  var blocHeures = document.getElementById('div_presenciumRegleHeuresFixes')
+  if (blocHeures !== null) {
+    blocHeures.style.display = (cle === 'heure') ? '' : 'none'
+  }
   var selectPersonne = document.getElementById('sel_presenciumReglePersonne')
   if (selectPersonne !== null) {
     var bloc = selectPersonne.closest('.form-group') || selectPersonne
     bloc.style.display = (cle === 'arrivee' || cle === 'depart') ? '' : 'none'
   }
+}
+
+/* ------------------------------------------------------- HEURES FIXES */
+
+/* Les heures de la règle courante, en étiquettes retirables. Construites en
+   DOM, texte posé par textContent : une heure relue d'une configuration écrite
+   à la main n'a rien à faire dans du balisage. */
+function presenciumRegleEditeurRendreHeures() {
+  var zone = document.getElementById('div_presenciumRegleHeuresListe')
+  if (zone === null || presenciumRegleCourante === null) { return }
+  zone.innerHTML = ''
+  var heures = presenciumHeuresFixes(presenciumRegleCourante.heures_fixes)
+  if (heures.length === 0) {
+    zone.appendChild(presenciumText('span', 'text-warning',
+      '{{Aucune heure : ajoutez-en au moins une, sans quoi la règle ne se déclenchera jamais.}}'))
+    return
+  }
+  for (var i = 0; i < heures.length; i++) {
+    var etiquette = presenciumText('span', 'label label-primary', heures[i] + ' ')
+    etiquette.style.display = 'inline-block'
+    etiquette.style.fontSize = '0.95em'
+    etiquette.style.margin = '0 5px 5px 0'
+    var croix = document.createElement('a')
+    croix.className = 'presenciumRetirerHeure'
+    croix.setAttribute('data-heure', heures[i])
+    croix.setAttribute('title', '{{Retirer cette heure}}')
+    croix.style.color = 'inherit'
+    croix.style.cursor = 'pointer'
+    croix.innerHTML = '<i class="fas fa-times"></i>'
+    etiquette.appendChild(croix)
+    zone.appendChild(etiquette)
+  }
+}
+
+/*
+ * Ajoute l'heure du champ à la liste.
+ *
+ * Rend true si le champ est vide ou si l'heure a été prise, false si elle a
+ * été refusée — la validation s'en sert pour ne pas enregistrer une règle dont
+ * la dernière heure tapée serait restée en rade. _dire : prévenir par une
+ * alerte (clic, Entrée) ; la validation, elle, affiche son propre message.
+ */
+function presenciumRegleEditeurAjouterHeure(_dire) {
+  var champ = document.getElementById('in_presenciumRegleHeureFixe')
+  if (champ === null || presenciumRegleCourante === null) { return true }
+  var saisie = String(champ.value || '').trim()
+  if (saisie === '') {
+    if (_dire) {
+      jeedomUtils.showAlert({ message: '{{Choisissez d\'abord une heure dans le champ.}}', level: 'warning' })
+      champ.focus()
+    }
+    return true
+  }
+  var heure = presenciumHeureNormalisee(saisie)
+  if (heure === null) {
+    jeedomUtils.showAlert({ message: '{{Cette heure n\'est pas valable : attendu HH:MM, de 00:00 à 23:59.}}', level: 'warning' })
+    champ.focus()
+    return false
+  }
+  var heures = presenciumHeuresFixes(presenciumRegleCourante.heures_fixes)
+  if (heures.indexOf(heure) === -1 && heures.length >= 24) {
+    jeedomUtils.showAlert({ message: '{{Vingt-quatre heures au plus : au-delà, c\'est une programmation, qui a sa place dans un scénario.}}', level: 'warning' })
+    champ.focus()
+    return false
+  }
+  if (heures.indexOf(heure) === -1) { heures.push(heure) }
+  presenciumRegleCourante.heures_fixes = presenciumHeuresFixes(heures)
+  presenciumRegleModifiee = true
+  champ.value = ''
+  presenciumRegleEditeurRendreHeures()
+  return true
 }
 
 /* --------------------------------------------------------- CONDITIONS */
@@ -1068,8 +1271,19 @@ function presenciumRegleEditeurLire() {
      refusée avant d'arriver ici, dans presenciumRegleValider. */
   var minutes = document.getElementById('in_presenciumRegleMinutes')
   regle.minutes = (minutes === null) ? 30 : presenciumEntier(minutes.value, 30, 1, 10080)
+  /* Les heures ne valent que pour `heure`, et sont vidées ailleurs, comme le
+     fait le serveur : une liste restée d'un déclencheur abandonné serait relue
+     par la page Santé comme si elle comptait. */
+  regle.heures_fixes = (regle.declencheur === 'heure') ? presenciumHeuresFixes(regle.heures_fixes) : []
   var attente = document.getElementById('in_presenciumRegleAttente')
   regle.attente = (attente === null) ? 0 : presenciumEntier(attente.value, 0, 0, 720)
+  /* Bornes alignées sur presenciumRegles::RELANCE_MAX et ATTENTE_MAX. Une
+     durée vide retombe sur son défaut de 60 minutes, comme au serveur, et non
+     sur le plancher : une minute de relance n'en laisse aucune. */
+  var relance = document.getElementById('in_presenciumRegleRelance')
+  regle.relance = (relance === null) ? 0 : presenciumEntier(relance.value, 0, 0, 120)
+  var relanceMax = document.getElementById('in_presenciumRegleRelanceMax')
+  regle.relance_max = (relanceMax === null) ? 60 : presenciumEntier(relanceMax.value, 60, 1, 720)
   var repos = document.getElementById('in_presenciumRegleRepos')
   regle.repos = (repos === null) ? 0 : presenciumEntier(repos.value, 0, 0, 1440)
   var simulation = document.getElementById('in_presenciumRegleSimulation')
@@ -1126,6 +1340,37 @@ function presenciumRegleValider() {
       return
     }
     regle.minutes = duree
+  }
+
+  /* Une règle à heure fixe sans heure ne partirait jamais, en silence. L'heure
+     tapée dans le champ mais pas encore ajoutée est reprise ici : c'est l'oubli
+     le plus naturel qui soit (on tape 21:30, on valide), et le punir d'une
+     heure perdue serait une règle qui ne s'arme pas le premier soir. */
+  if (regle.declencheur === 'heure') {
+    if (!presenciumRegleEditeurAjouterHeure(false)) { return }
+    regle.heures_fixes = presenciumHeuresFixes(presenciumRegleCourante.heures_fixes)
+    if (regle.heures_fixes.length === 0) {
+      jeedomUtils.showAlert({
+        message: '{{Ajoutez au moins une heure : une règle à heure fixe sans heure ne se déclencherait jamais.}}',
+        level: 'warning'
+      })
+      var champHeure = document.getElementById('in_presenciumRegleHeureFixe')
+      if (champHeure !== null) { champHeure.focus() }
+      return
+    }
+  }
+
+  /* Un intervalle de relance plus long que la durée ne laisserait place à
+     aucun nouvel essai : la relance aurait l'air réglée et ne ferait rien. On
+     le dit plutôt que d'enregistrer une promesse vide. */
+  if (regle.relance > 0 && regle.relance > regle.relance_max) {
+    jeedomUtils.showAlert({
+      message: '{{L\'intervalle de relance dépasse sa durée maximale : aucun nouvel essai n\'aurait lieu. Allongez la durée, ou raccourcissez l\'intervalle.}}',
+      level: 'warning'
+    })
+    var champRelanceMax = document.getElementById('in_presenciumRegleRelanceMax')
+    if (champRelanceMax !== null) { champRelanceMax.focus() }
+    return
   }
 
   /* Une condition sans commande est fausse à chaque évaluation : la règle ne
